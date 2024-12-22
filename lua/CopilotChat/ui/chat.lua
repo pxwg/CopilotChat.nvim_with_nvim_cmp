@@ -57,22 +57,23 @@ end
 ---@field content string?
 
 ---@class CopilotChat.ui.Chat : CopilotChat.ui.Overlay
+---@field question_header string
+---@field answer_header string
+---@field separator string
 ---@field header_ns number
 ---@field winnr number?
 ---@field spinner CopilotChat.ui.Spinner
 ---@field sections table<CopilotChat.ui.Chat.Section>
+---@field config CopilotChat.config.shared
 ---@field token_count number?
 ---@field token_max_count number?
----@field layout string?
----@field auto_insert boolean
----@field auto_follow_cursor boolean
----@field highlight_headers boolean
----@field question_header string?
----@field answer_header string?
----@field separator string?
-local Chat = class(function(self, help, on_buf_create)
+local Chat = class(function(self, question_header, answer_header, separator, help, on_buf_create)
   Overlay.init(self, 'copilot-chat', help, on_buf_create)
   vim.treesitter.language.register('markdown', self.name)
+
+  self.question_header = question_header
+  self.answer_header = answer_header
+  self.separator = separator
 
   self.header_ns = vim.api.nvim_create_namespace('copilot-chat-headers')
   self.winnr = nil
@@ -80,17 +81,9 @@ local Chat = class(function(self, help, on_buf_create)
   self.sections = {}
 
   -- Variables
+  self.config = {}
   self.token_count = nil
   self.token_max_count = nil
-
-  -- Config
-  self.layout = nil
-  self.auto_insert = false
-  self.auto_follow_cursor = true
-  self.highlight_headers = true
-  self.question_header = nil
-  self.answer_header = nil
-  self.separator = nil
 end, Overlay)
 
 ---@return number
@@ -178,12 +171,14 @@ function Chat:render()
     end
 
     -- Highlight separators
-    if self.highlight_headers and separator_found then
+    if self.config.highlight_headers and separator_found then
       local sep = vim.fn.strwidth(line) - vim.fn.strwidth(self.separator)
       -- separator line
       vim.api.nvim_buf_set_extmark(self.bufnr, self.header_ns, l - 1, sep, {
         virt_text_win_col = sep,
-        virt_text = { { string.rep(self.separator, vim.go.columns), 'CopilotChatSeparator' } },
+        virt_text = {
+          { string.rep(self.separator, vim.go.columns), 'CopilotChatSeparator' },
+        },
         priority = 100,
         strict = false,
       })
@@ -225,10 +220,14 @@ function Chat:render()
 
   local last_section = sections[#sections]
   if last_section and not last_section.answer then
-    local msg = self.help
+    local msg = self.config.show_help and self.help or ''
     if self.token_count and self.token_max_count then
-      msg = msg .. '\n' .. self.token_count .. '/' .. self.token_max_count .. ' tokens used'
+      if msg ~= '' then
+        msg = msg .. '\n'
+      end
+      msg = msg .. self.token_count .. '/' .. self.token_max_count .. ' tokens used'
     end
+
     self:show_help(msg, last_section.start_line - last_section.end_line - 1)
   else
     self:clear_help()
@@ -243,6 +242,7 @@ function Chat:get_closest_section()
     return nil
   end
 
+  self:render()
   local cursor_pos = vim.api.nvim_win_get_cursor(self.winnr)
   local cursor_line = cursor_pos[1]
   local closest_section = nil
@@ -280,6 +280,7 @@ function Chat:get_closest_block()
     return nil
   end
 
+  self:render()
   local cursor_pos = vim.api.nvim_win_get_cursor(self.winnr)
   local cursor_line = cursor_pos[1]
   local closest_block = nil
@@ -319,7 +320,6 @@ function Chat:clear_prompt()
   end
 
   self:render()
-
   local section = self.sections[#self.sections]
   if not section or section.answer then
     return
@@ -365,8 +365,8 @@ function Chat:append(str)
   end
 
   -- Decide if we should follow cursor after appending text.
-  local should_follow_cursor = self.auto_follow_cursor
-  if self.auto_follow_cursor and self:visible() then
+  local should_follow_cursor = self.config.auto_follow_cursor
+  if should_follow_cursor and self:visible() then
     local current_pos = vim.api.nvim_win_get_cursor(self.winnr)
     local line_count = vim.api.nvim_buf_line_count(self.bufnr)
     -- Follow only if the cursor is currently at the last line.
@@ -399,16 +399,17 @@ function Chat:clear()
   vim.bo[self.bufnr].modifiable = false
 end
 
----@param config CopilotChat.config
+---@param config CopilotChat.config.shared
 function Chat:open(config)
   self:validate()
+  self.config = config
 
-  local window = config.window
+  local window = config.window or {}
   local layout = window.layout
   local width = window.width > 1 and window.width or math.floor(vim.o.columns * window.width)
   local height = window.height > 1 and window.height or math.floor(vim.o.lines * window.height)
 
-  if self.layout ~= layout then
+  if self.config.window.layout ~= layout then
     self:close()
   end
 
@@ -457,31 +458,6 @@ function Chat:open(config)
     vim.api.nvim_win_set_buf(self.winnr, self.bufnr)
   end
 
-  self.layout = layout
-  self.auto_insert = config.auto_insert_mode
-  self.auto_follow_cursor = config.auto_follow_cursor
-  self.highlight_headers = config.highlight_headers
-  self.question_header = config.question_header
-  self.answer_header = config.answer_header
-  self.separator = config.separator
-
-  if config.chat_autocomplete and vim.fn.has('nvim-0.11.0') == 1 then
-    -- Add popup and noinsert if not present
-    local completeopt = vim.opt.completeopt:get()
-    local updated = false
-    if not vim.tbl_contains(completeopt, 'noinsert') then
-      updated = true
-      table.insert(completeopt, 'noinsert')
-    end
-    if not vim.tbl_contains(completeopt, 'popup') then
-      updated = true
-      table.insert(completeopt, 'popup')
-    end
-    if updated then
-      vim.bo[self.bufnr].completeopt = table.concat(completeopt, ',')
-    end
-  end
-
   vim.wo[self.winnr].wrap = true
   vim.wo[self.winnr].linebreak = true
   vim.wo[self.winnr].cursorline = true
@@ -490,7 +466,7 @@ function Chat:open(config)
   if config.show_folds then
     vim.wo[self.winnr].foldcolumn = '1'
     vim.wo[self.winnr].foldmethod = 'expr'
-    vim.wo[self.winnr].foldexpr = "v:lua.CopilotChatFoldExpr(v:lnum, '" .. config.separator .. "')"
+    vim.wo[self.winnr].foldexpr = "v:lua.CopilotChatFoldExpr(v:lnum, '" .. self.separator .. "')"
   else
     vim.wo[self.winnr].foldcolumn = '0'
   end
@@ -508,7 +484,7 @@ function Chat:close(bufnr)
     utils.return_to_normal_mode()
   end
 
-  if self.layout == 'replace' then
+  if self.config.window.layout == 'replace' then
     if bufnr then
       self:restore(self.winnr, bufnr)
     end
@@ -525,7 +501,7 @@ function Chat:focus()
   end
 
   vim.api.nvim_set_current_win(self.winnr)
-  if self.auto_insert and self:active() and vim.bo[self.bufnr].modifiable then
+  if self.config.auto_insert_mode and self:active() and vim.bo[self.bufnr].modifiable then
     vim.cmd('startinsert')
   end
 end
@@ -550,7 +526,7 @@ function Chat:finish()
 
   self.spinner:finish()
   vim.bo[self.bufnr].modifiable = true
-  if self.auto_insert and self:active() then
+  if self.config.auto_insert_mode and self:active() then
     vim.cmd('startinsert')
   end
 end

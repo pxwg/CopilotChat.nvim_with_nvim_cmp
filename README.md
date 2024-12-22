@@ -1,71 +1,50 @@
+<div align="center">
+
 # Copilot Chat for Neovim
 
-[![Documentation](https://img.shields.io/badge/documentation-yes-brightgreen.svg)](https://copilotc-nvim.github.io/CopilotChat.nvim/)
-[![pre-commit.ci](https://results.pre-commit.ci/badge/github/CopilotC-Nvim/CopilotChat.nvim/main.svg)](https://results.pre-commit.ci/latest/github/CopilotC-Nvim/CopilotChat.nvim/main)
-[![Discord](https://img.shields.io/discord/1200633211236122665.svg)](https://discord.gg/vy6hJsTWaZ)
-[![Dotfyle](https://dotfyle.com/plugins/CopilotC-Nvim/CopilotChat.nvim/shield?style=flat)](https://dotfyle.com/plugins/CopilotC-Nvim/CopilotChat.nvim)
-[![All Contributors](https://img.shields.io/github/all-contributors/CopilotC-Nvim/CopilotChat.nvim?color=ee8449&style=flat&link=%23contributors-)](#contributors)
+[![Release](https://img.shields.io/github/v/release/CopilotC-Nvim/CopilotChat.nvim?logo=github&style=for-the-badge)](https://github.com/CopilotC-Nvim/CopilotChat.nvim/releases/latest)
+[![Build](https://img.shields.io/github/actions/workflow/status/CopilotC-Nvim/CopilotChat.nvim/ci.yml?logo=github&style=for-the-badge)](https://github.com/CopilotC-Nvim/CopilotChat.nvim/actions/workflows/ci.yml)
+[![Contributors](https://img.shields.io/github/all-contributors/CopilotC-Nvim/CopilotChat.nvim?color=ee8449&logo=github&label=contributors&style=for-the-badge)](#contributors)
+[![Documentation](https://img.shields.io/badge/documentation-yes-brightgreen.svg?logo=vim&style=for-the-badge)](/doc/CopilotChat.txt)
+[![Discord](https://img.shields.io/discord/1200633211236122665?logo=discord&label=discord&style=for-the-badge)](https://discord.gg/vy6hJsTWaZ)
+[![Dotfyle](https://dotfyle.com/plugins/CopilotC-Nvim/CopilotChat.nvim/shield?style=for-the-badge)](https://dotfyle.com/plugins/CopilotC-Nvim/CopilotChat.nvim)
 
 ![image](https://github.com/user-attachments/assets/9ee30811-0fb8-4500-91f6-34ea6b26adea)
 
-> [!NOTE]
-> Plugin was rewritten to Lua from Python. Please check the [migration guide from version 1 to version 2](/MIGRATION.md) for more information.
+https://github.com/user-attachments/assets/8cad5643-63b2-4641-a5c4-68bc313f20e6
 
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-  - [Lazy.nvim](#lazy.nvim)
-  - [Vim-Plug](#vim-plug)
-  - [Manual](#manual)
-  - [Post-Installation](#post-installation)
-- [Usage](#usage)
-  - [Commands](#commands)
-  - [Chat Mappings](#chat-mappings)
-  - [Prompts](#prompts)
-  - [System Prompts](#system-prompts)
-  - [Sticky Prompts](#sticky-prompts)
-  - [Models](#models)
-  - [Agents](#agents)
-  - [Contexts](#contexts)
-  - [Selections](#selections)
-  - [API](#api)
-- [Configuration](#configuration)
-  - [Default configuration](#default-configuration)
-  - [Customizing buffers](#customizing-buffers)
-- [Tips](#tips)
-- [Roadmap (Wishlist)](#roadmap-wishlist)
-- [Development](#development)
-- [Contributors ✨](#contributors-)
+</div>
 
-## Prerequisites
+# Requirements
 
-Ensure you have the following installed:
-
-- **Neovim stable (0.9.5) or nightly**.
-
-Verify "[Copilot chat in the IDE](https://github.com/settings/copilot)" is enabled.
-
-Optional:
-
-- tiktoken_core: `sudo luarocks install --lua-version 5.1 tiktoken_core`. Alternatively, download a pre-built binary from [lua-tiktoken releases](https://github.com/gptlang/lua-tiktoken/releases)
-- You can check your Lua PATH in Neovim by doing `:lua print(package.cpath)`. Save the binary as `tiktoken_core.so` in any of the given paths.
-
-> For Arch Linux user, you can install [`luajit-tiktoken-bin`](https://aur.archlinux.org/packages/luajit-tiktoken-bin) or [`lua51-tiktoken-bin`](https://aur.archlinux.org/packages/lua51-tiktoken-bin) from aur!
+- [Neovim 0.9.5+](https://neovim.io/) - Older versions are not supported, and for best compatibility 0.10.0+ is preferred
+- [curl](https://curl.se/) - 8.0.0+ is recommended for best compatibility. Should be installed by default on most systems and also shipped with Neovim
+- [Copilot chat in the IDE](https://github.com/settings/copilot) setting enabled in GitHub settings
+- _(Optional)_ [tiktoken_core](https://github.com/gptlang/lua-tiktoken) - Used for more accurate token counting
+  - For Arch Linux users, you can install [`luajit-tiktoken-bin`](https://aur.archlinux.org/packages/luajit-tiktoken-bin) or [`lua51-tiktoken-bin`](https://aur.archlinux.org/packages/lua51-tiktoken-bin) from aur
+  - Alternatively, install via luarocks: `sudo luarocks install --lua-version 5.1 tiktoken_core`
+  - Alternatively, download a pre-built binary from [lua-tiktoken releases](https://github.com/gptlang/lua-tiktoken/releases). You can check your Lua PATH in Neovim by doing `:lua print(package.cpath)`. Save the binary as `tiktoken_core.so` in any of the given paths.
+- _(Optional)_ [git](https://git-scm.com/) - Used for fetching git diffs for `git` context
+  - For Arch Linux users, you can install [`git`](https://archlinux.org/packages/extra/x86_64/git) from the official repositories
+  - For other systems, use your package manager to install `git`. For windows use the installer provided from git site
+- _(Optional)_ [lynx](https://lynx.invisible-island.net/) - Used for improved fetching of URLs for `url` context
+  - For Arch Linux users, you can install [`lynx`](https://archlinux.org/packages/extra/x86_64/lynx) from the official repositories
+  - For other systems, use your package manager to install `lynx`. For windows use the installer provided from lynx site
 
 > [!WARNING]
 > If you are on neovim < 0.11.0, you also might want to add `noinsert` and `popup` to your `completeopt` to make the chat completion behave well.
 
-## Installation
+# Installation
 
-### Lazy.nvim
+### [Lazy.nvim](https://github.com/folke/lazy.nvim)
 
 ```lua
 return {
   {
     "CopilotC-Nvim/CopilotChat.nvim",
-    branch = "canary",
     dependencies = {
       { "github/copilot.vim" }, -- or zbirenbaum/copilot.lua
-      { "nvim-lua/plenary.nvim" }, -- for curl, log wrapper
+      { "nvim-lua/plenary.nvim", branch = "master" }, -- for curl, log and async functions
     },
     build = "make tiktoken", -- Only on MacOS or Linux
     opts = {
@@ -76,9 +55,9 @@ return {
 }
 ```
 
-See @jellydn for [configuration](https://github.com/jellydn/lazy-nvim-ide/blob/main/lua/plugins/extras/copilot-chat-v2.lua)
+See [@jellydn](https://github.com/jellydn) for [configuration](https://github.com/jellydn/lazy-nvim-ide/blob/main/lua/plugins/extras/copilot-chat-v2.lua)
 
-### Vim-Plug
+### [Vim-Plug](https://github.com/junegunn/vim-plug)
 
 Similar to the lazy setup, you can use the following configuration:
 
@@ -86,7 +65,7 @@ Similar to the lazy setup, you can use the following configuration:
 call plug#begin()
 Plug 'github/copilot.vim'
 Plug 'nvim-lua/plenary.nvim'
-Plug 'CopilotC-Nvim/CopilotChat.nvim', { 'branch': 'canary' }
+Plug 'CopilotC-Nvim/CopilotChat.nvim'
 call plug#end()
 
 lua << EOF
@@ -107,7 +86,7 @@ cd ~/.config/nvim/pack/copilotchat/start
 git clone https://github.com/github/copilot.vim
 git clone https://github.com/nvim-lua/plenary.nvim
 
-git clone -b canary https://github.com/CopilotC-Nvim/CopilotChat.nvim
+git clone https://github.com/CopilotC-Nvim/CopilotChat.nvim
 ```
 
 2. Add to your configuration (e.g. `~/.config/nvim/init.lua`)
@@ -118,11 +97,11 @@ require("CopilotChat").setup {
 }
 ```
 
-See @deathbeam for [configuration](https://github.com/deathbeam/dotfiles/blob/master/nvim/.config/nvim/lua/config/copilot.lua#L14)
+See [@deathbeam](https://github.com/deathbeam) for [configuration](https://github.com/deathbeam/dotfiles/blob/master/nvim/.config/nvim/lua/config/copilot.lua)
 
-## Usage
+# Usage
 
-### Commands
+## Commands
 
 - `:CopilotChat <input>?` - Open chat window with optional input
 - `:CopilotChatOpen` - Open chat window
@@ -135,8 +114,9 @@ See @deathbeam for [configuration](https://github.com/deathbeam/dotfiles/blob/ma
 - `:CopilotChatDebugInfo` - Show debug information
 - `:CopilotChatModels` - View and select available models. This is reset when a new instance is made. Please set your model in `init.lua` for persistence.
 - `:CopilotChatAgents` - View and select available agents. This is reset when a new instance is made. Please set your agent in `init.lua` for persistence.
+- `:CopilotChat<PromptName>` - Ask a question with a specific prompt. For example, `:CopilotChatExplain` will ask a question with the `Explain` prompt. See [Prompts](#prompts) for more information.
 
-### Chat Mappings
+## Chat Mappings
 
 - `<Tab>` - Trigger completion menu for special tokens or accept current completion (see help)
 - `q`/`<C-c>` - Close the chat window
@@ -148,9 +128,8 @@ See @deathbeam for [configuration](https://github.com/deathbeam/dotfiles/blob/ma
 - `gq` - Add all diffs from chat to quickfix list
 - `gy` - Yank nearest diff to register (defaults to `"`)
 - `gd` - Show diff between source and nearest diff
-- `gp` - Show system prompt for current chat
-- `gs` - Show current user selection
-- `gc` - Show current user context
+- `gi` - Show info about current chat (model, agent, system prompt)
+- `gc` - Show current chat context
 - `gh` - Show help message
 
 The mappings can be customized by setting the `mappings` table in your configuration. Each mapping can have:
@@ -172,7 +151,7 @@ For example, to change the submit prompt mapping:
 }
 ```
 
-### Prompts
+## Prompts
 
 You can ask Copilot to do various tasks with prompts. You can reference prompts with `/PromptName` in chat or call with command `:CopilotChat<PromptName>`.  
 Default prompts are:
@@ -200,7 +179,7 @@ You can define custom prompts like this (only `prompt` is required):
 }
 ```
 
-### System Prompts
+## System Prompts
 
 System prompts specify the behavior of the AI model. You can reference system prompts with `/PROMPT_NAME` in chat.
 Default system prompts are:
@@ -222,7 +201,7 @@ You can define custom system prompts like this (works same as `prompts` so you c
 }
 ```
 
-### Sticky Prompts
+## Sticky Prompts
 
 You can set sticky prompt in chat by prefixing the text with `> ` using markdown blockquote syntax.  
 The sticky prompt will be copied at start of every new prompt in chat window. You can freely edit the sticky prompt, only rule is `> ` prefix at beginning of line.  
@@ -241,21 +220,21 @@ List all files in the workspace
 What is 1 + 11
 ```
 
-### Models
+## Models
 
 You can list available models with `:CopilotChatModels` command. Model determines the AI model used for the chat.  
 You can set the model in the prompt by using `$` followed by the model name or default model via config using `model` key.  
 Default models are:
 
 - `gpt-4o` - This is the default Copilot Chat model. It is a versatile, multimodal model that excels in both text and image processing and is designed to provide fast, reliable responses. It also has superior performance in non-English languages. Gpt-4o is hosted on Azure.
-- `claude-3.5-sonnet` - This model excels at coding tasks across the entire software development lifecycle, from initial design to bug fixes, maintenance to optimizations. GitHub Copilot uses Claude 3.5 Sonnet hosted on Amazon Web Services.
+- `claude-3.5-sonnet` - This model excels at coding tasks across the entire software development lifecycle, from initial design to bug fixes, maintenance to optimizations. GitHub Copilot uses Claude 3.5 Sonnet hosted on Amazon Web Services. Claude is **not available everywhere** so if you do not see it, try github codespaces or VPN.
 - `o1-preview` - This model is focused on advanced reasoning and solving complex problems, in particular in math and science. It responds more slowly than the gpt-4o model. You can make 10 requests to this model per day. o1-preview is hosted on Azure.
 - `o1-mini` - This is the faster version of the o1-preview model, balancing the use of complex reasoning with the need for faster responses. It is best suited for code generation and small context operations. You can make 50 requests to this model per day. o1-mini is hosted on Azure.
 
 For more information about models, see [here](https://docs.github.com/en/copilot/using-github-copilot/asking-github-copilot-questions-in-your-ide#ai-models-for-copilot-chat)  
 You can use more models from [here](https://github.com/marketplace/models) by using `@models` agent from [here](https://github.com/marketplace/models-github) (example: `@models Using Mistral-small, what is 1 + 11`)
 
-### Agents
+## Agents
 
 Agents are used to determine the AI agent used for the chat. You can list available agents with `:CopilotChatAgents` command.  
 You can set the agent in the prompt by using `@` followed by the agent name or default agent via config using `agent` key.  
@@ -264,7 +243,7 @@ Default "noop" agent is `copilot`.
 For more information about extension agents, see [here](https://docs.github.com/en/copilot/using-github-copilot/using-extensions-to-integrate-external-tools-with-copilot-chat)  
 You can install more agents from [here](https://github.com/marketplace?type=apps&copilot_app=true)
 
-### Contexts
+## Contexts
 
 Contexts are used to determine the context of the chat.  
 You can add context to the prompt by using `#` followed by the context name or default context via config using `context` (can be single or array) key.  
@@ -272,12 +251,17 @@ Any amount of context can be added to the prompt.
 If context supports input, you can set the input in the prompt by using `:` followed by the input (or pressing `complete` key after `:`).  
 Default contexts are:
 
-- `buffer` - Includes specified buffer in chat context (default current). Supports input.
-- `buffers` - Includes all buffers in chat context (default listed). Supports input.
+- `buffer` - Includes specified buffer in chat context. Supports input (default current).
+- `buffers` - Includes all buffers in chat context. Supports input (default listed).
 - `file` - Includes content of provided file in chat context. Supports input.
-- `files` - Includes all non-hidden filenames in the current workspace in chat context. Supports input.
-- `git` - Includes current git diff in chat context (default unstaged). Supports input.
-- `register` - Includes content of specified register in chat context (default `+`, e.g system clipboard). Supports input.
+- `files` - Includes all non-hidden files in the current workspace in chat context. Supports input (default list).
+  - `files:list` - Only lists file names.
+  - `files:full` - Includes file content for each file found. Can be slow on large workspaces, use with care.
+- `git` - Requires `git`. Includes current git diff in chat context. Supports input (default unstaged).
+  - `git:unstaged` - Includes unstaged changes in chat context.
+  - `git:staged` - Includes staged changes in chat context.
+- `url` - Includes content of provided URL in chat context. Supports input.
+- `register` - Includes contents of register in chat context. Supports input (default +, e.g clipboard).
 
 You can define custom contexts like this:
 
@@ -318,7 +302,7 @@ You can define custom contexts like this:
 What is my birthday
 ```
 
-### Selections
+## Selections
 
 Selections are used to determine the source of the chat (so basically what to chat about).  
 Selections are configurable either by default or by prompt.  
@@ -341,7 +325,7 @@ You can chain multiple selections like this:
 }
 ```
 
-### API
+## API
 
 ```lua
 local chat = require("CopilotChat")
@@ -400,6 +384,10 @@ local prompts = chat.prompts()
 -- Get last copilot response (also can be used for integrations and custom keymaps)
 local response = chat.response()
 
+-- Retrieve current chat config
+local config = chat.config
+print(config.model)
+
 -- Pick a prompt using vim.ui.select
 local actions = require("CopilotChat.actions")
 
@@ -412,18 +400,16 @@ actions.pick(actions.prompt_actions({
 chat.log_level("debug")
 ```
 
-## Configuration
+# Configuration
 
-### Default configuration
+## Default configuration
 
 Also see [here](/lua/CopilotChat/config.lua):
 
 ```lua
 {
-  debug = false, -- Enable debug logging (same as 'log_level = 'debug')
-  log_level = 'info', -- Log level to use, 'trace', 'debug', 'info', 'warn', 'error', 'fatal'
-  proxy = nil, -- [protocol://]host[:port] Use this proxy
-  allow_insecure = false, -- Allow insecure server connections
+
+  -- Shared config starts here (can be passed to functions at runtime and configured via setup function)
 
   system_prompt = prompts.COPILOT_INSTRUCTIONS, -- System prompt to use (can be specified manually in prompt via /).
   model = 'gpt-4o', -- Default model to use, see ':CopilotChatModels' for available models (can be specified manually in prompt via $).
@@ -431,29 +417,52 @@ Also see [here](/lua/CopilotChat/config.lua):
   context = nil, -- Default context or array of contexts to use (can be specified manually in prompt via #).
   temperature = 0.1, -- GPT result temperature
 
-  question_header = '## User ', -- Header to use for user questions
-  answer_header = '## Copilot ', -- Header to use for AI answers
-  error_header = '## Error ', -- Header to use for errors
-  separator = '───', -- Separator to use in chat
-
-  chat_autocomplete = true, -- Enable chat autocompletion (when disabled, requires manual `mappings.complete` trigger)
-  show_folds = true, -- Shows folds for sections in chat
-  show_help = true, -- Shows help message as virtual lines when waiting for user input
-  auto_follow_cursor = true, -- Auto-follow cursor in chat
-  auto_insert_mode = false, -- Automatically enter insert mode when opening window and on new prompt
-  insert_at_end = false, -- Move cursor to end of buffer when inserting text
-  clear_chat_on_new_prompt = false, -- Clears chat on every new prompt
-  highlight_selection = true, -- Highlight selection in the source buffer when in the chat window
-  highlight_headers = true, -- Highlight headers in chat, disable if using markdown renderers (like render-markdown.nvim)
-
-  history_path = vim.fn.stdpath('data') .. '/copilotchat_history', -- Default path to stored history
+  headless = false, -- Do not write to chat buffer and use history(useful for using callback for custom processing)
   callback = nil, -- Callback to use when ask response is received
-  no_chat = false, -- Do not write to chat buffer and use chat history (useful for using callback for custom processing)
 
   -- default selection
   selection = function(source)
     return select.visual(source) or select.buffer(source)
   end,
+
+  -- default window options
+  window = {
+    layout = 'vertical', -- 'vertical', 'horizontal', 'float', 'replace'
+    width = 0.5, -- fractional width of parent, or absolute width in columns when > 1
+    height = 0.5, -- fractional height of parent, or absolute height in rows when > 1
+    -- Options below only apply to floating windows
+    relative = 'editor', -- 'editor', 'win', 'cursor', 'mouse'
+    border = 'single', -- 'none', single', 'double', 'rounded', 'solid', 'shadow'
+    row = nil, -- row position of the window, default is centered
+    col = nil, -- column position of the window, default is centered
+    title = 'Copilot Chat', -- title of chat window
+    footer = nil, -- footer of chat window
+    zindex = 1, -- determines if window is on top or below other floating windows
+  },
+
+  show_help = true, -- Shows help message as virtual lines when waiting for user input
+  show_folds = true, -- Shows folds for sections in chat
+  highlight_selection = true, -- Highlight selection
+  highlight_headers = true, -- Highlight headers in chat, disable if using markdown renderers (like render-markdown.nvim)
+  auto_follow_cursor = true, -- Auto-follow cursor in chat
+  auto_insert_mode = false, -- Automatically enter insert mode when opening window and on new prompt
+  insert_at_end = false, -- Move cursor to end of buffer when inserting text
+  clear_chat_on_new_prompt = false, -- Clears chat on every new prompt
+
+  -- Static config starts here (can be configured only via setup function)
+
+  debug = false, -- Enable debug logging (same as 'log_level = 'debug')
+  log_level = 'info', -- Log level to use, 'trace', 'debug', 'info', 'warn', 'error', 'fatal'
+  proxy = nil, -- [protocol://]host[:port] Use this proxy
+  allow_insecure = false, -- Allow insecure server connections
+
+  chat_autocomplete = true, -- Enable chat autocompletion (when disabled, requires manual `mappings.complete` trigger)
+  history_path = vim.fn.stdpath('data') .. '/copilotchat_history', -- Default path to stored history
+
+  question_header = '# User ', -- Header to use for user questions
+  answer_header = '# Copilot ', -- Header to use for AI answers
+  error_header = '# Error ', -- Header to use for errors
+  separator = '───', -- Separator to use in chat
 
   -- default contexts
   contexts = {
@@ -470,6 +479,9 @@ Also see [here](/lua/CopilotChat/config.lua):
       -- see config.lua for implementation
     },
     git = {
+      -- see config.lua for implementation
+    },
+    url = {
       -- see config.lua for implementation
     },
     register = {
@@ -503,37 +515,22 @@ Also see [here](/lua/CopilotChat/config.lua):
     },
   },
 
-  -- default window options
-  window = {
-    layout = 'vertical', -- 'vertical', 'horizontal', 'float', 'replace'
-    width = 0.5, -- fractional width of parent, or absolute width in columns when > 1
-    height = 0.5, -- fractional height of parent, or absolute height in rows when > 1
-    -- Options below only apply to floating windows
-    relative = 'editor', -- 'editor', 'win', 'cursor', 'mouse'
-    border = 'single', -- 'none', single', 'double', 'rounded', 'solid', 'shadow'
-    row = nil, -- row position of the window, default is centered
-    col = nil, -- column position of the window, default is centered
-    title = 'Copilot Chat', -- title of chat window
-    footer = nil, -- footer of chat window
-    zindex = 1, -- determines if window is on top or below other floating windows
-  },
-
   -- default mappings
   mappings = {
     complete = {
-      insert ='<Tab>',
+      insert = '<Tab>',
     },
     close = {
       normal = 'q',
-      insert = '<C-c>'
+      insert = '<C-c>',
     },
     reset = {
-      normal ='<C-l>',
-      insert = '<C-l>'
+      normal = '<C-l>',
+      insert = '<C-l>',
     },
     submit_prompt = {
       normal = '<CR>',
-      insert = '<C-s>'
+      insert = '<C-s>',
     },
     toggle_sticky = {
       detail = 'Makes line under cursor sticky or deletes sticky line.',
@@ -541,7 +538,7 @@ Also see [here](/lua/CopilotChat/config.lua):
     },
     accept_diff = {
       normal = '<C-y>',
-      insert = '<C-y>'
+      insert = '<C-y>',
     },
     jump_to_diff = {
       normal = 'gj',
@@ -554,15 +551,12 @@ Also see [here](/lua/CopilotChat/config.lua):
       register = '"',
     },
     show_diff = {
-      normal = 'gd'
+      normal = 'gd',
     },
-    show_system_prompt = {
-      normal = 'gp'
+    show_info = {
+      normal = 'gi',
     },
-    show_user_selection = {
-      normal = 'gs'
-    },
-    show_user_context = {
+    show_context = {
       normal = 'gc',
     },
     show_help = {
@@ -572,9 +566,9 @@ Also see [here](/lua/CopilotChat/config.lua):
 }
 ```
 
-### Customizing buffers
+## Customizing buffers
 
-You can set local options for the buffers that are created by this plugin: `copilot-diff`, `copilot-system-prompt`, `copilot-user-selection`, `copilot-chat`.
+You can set local options for the buffers that are created by this plugin, `copilot-chat`, `copilot-diff`, `copilot-overlay`:
 
 ```lua
 vim.api.nvim_create_autocmd('BufEnter', {
@@ -590,7 +584,7 @@ vim.api.nvim_create_autocmd('BufEnter', {
 })
 ```
 
-## Tips
+# Tips
 
 <details>
 <summary>Quick chat with your buffer</summary>
@@ -613,7 +607,7 @@ To chat with Copilot using the entire content of the buffer, you can add the fol
   }
 ```
 
-[![Chat with buffer](https://i.gyazo.com/9b8cbf1d78a19f326282a6520bc9aab0.gif)](https://gyazo.com/9b8cbf1d78a19f326282a6520bc9aab0)
+[![chat-with-buffer](https://i.gyazo.com/9b8cbf1d78a19f326282a6520bc9aab0.gif)](https://gyazo.com/9b8cbf1d78a19f326282a6520bc9aab0)
 
 </details>
 
@@ -660,7 +654,7 @@ Requires [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim) plug
   },
 ```
 
-![image](https://github.com/CopilotC-Nvim/CopilotChat.nvim/assets/5115805/14360883-7535-4ee3-aca1-79f6c39f626b)
+![telescope-integration](https://github.com/CopilotC-Nvim/CopilotChat.nvim/assets/5115805/14360883-7535-4ee3-aca1-79f6c39f626b)
 
 </details>
 
@@ -683,7 +677,7 @@ Requires [fzf-lua](https://github.com/ibhagwan/fzf-lua) plugin to be installed.
   },
 ```
 
-![image](https://github.com/CopilotC-Nvim/CopilotChat.nvim/assets/5115805/743455bb-9517-48a8-a7a1-81215dc3b747)
+![fzf-lua-integration](https://github.com/CopilotC-Nvim/CopilotChat.nvim/assets/5115805/743455bb-9517-48a8-a7a1-81215dc3b747)
 
 </details>
 
@@ -707,16 +701,16 @@ require('CopilotChat').setup({
 })
 ```
 
-![image](https://github.com/user-attachments/assets/d8dc16f8-3f61-43fa-bfb9-83f240ae30e8)
+![render-markdown-integration](https://github.com/user-attachments/assets/d8dc16f8-3f61-43fa-bfb9-83f240ae30e8)
 
 </details>
 
-## Roadmap (Wishlist)
+# Roadmap
 
-- Use indexed vector database with current workspace for better context selection
+- Improved caching for context (persistence through restarts/smarter caching)
 - General QOL improvements
 
-## Development
+# Development
 
 ### Installing Pre-commit Tool
 
@@ -728,7 +722,7 @@ make install-pre-commit
 
 This will install the pre-commit tool and the pre-commit hooks.
 
-## Contributors ✨
+# Contributors
 
 If you want to contribute to this project, please read the [CONTRIBUTING.md](/CONTRIBUTING.md) file.
 
@@ -791,6 +785,10 @@ Thanks goes to these wonderful people ([emoji key](https://allcontributors.org/d
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/Moriango"><img src="https://avatars.githubusercontent.com/u/43554061?v=4?s=100" width="100px;" alt="Toddneal Stallworth"/><br /><sub><b>Toddneal Stallworth</b></sub></a><br /><a href="https://github.com/CopilotC-Nvim/CopilotChat.nvim/commits?author=Moriango" title="Documentation">📖</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/taketwo"><img src="https://avatars.githubusercontent.com/u/1241736?v=4?s=100" width="100px;" alt="Sergey Alexandrov"/><br /><sub><b>Sergey Alexandrov</b></sub></a><br /><a href="https://github.com/CopilotC-Nvim/CopilotChat.nvim/commits?author=taketwo" title="Code">💻</a></td>
       <td align="center" valign="top" width="14.28%"><a href="https://github.com/lemeb"><img src="https://avatars.githubusercontent.com/u/7331643?v=4?s=100" width="100px;" alt="Léopold Mebazaa"/><br /><sub><b>Léopold Mebazaa</b></sub></a><br /><a href="https://github.com/CopilotC-Nvim/CopilotChat.nvim/commits?author=lemeb" title="Code">💻</a></td>
+      <td align="center" valign="top" width="14.28%"><a href="https://atko.space"><img src="https://avatars.githubusercontent.com/u/14937572?v=4?s=100" width="100px;" alt="JunKi Jin"/><br /><sub><b>JunKi Jin</b></sub></a><br /><a href="https://github.com/CopilotC-Nvim/CopilotChat.nvim/commits?author=atkodev" title="Code">💻</a></td>
+    </tr>
+    <tr>
+      <td align="center" valign="top" width="14.28%"><a href="https://github.com/abdennourzahaf"><img src="https://avatars.githubusercontent.com/u/62243290?v=4?s=100" width="100px;" alt="abdennourzahaf"/><br /><sub><b>abdennourzahaf</b></sub></a><br /><a href="https://github.com/CopilotC-Nvim/CopilotChat.nvim/commits?author=abdennourzahaf" title="Documentation">📖</a></td>
     </tr>
   </tbody>
 </table>

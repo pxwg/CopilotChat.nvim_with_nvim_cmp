@@ -12,13 +12,16 @@ local Overlay = require('CopilotChat.ui.overlay')
 local Debug = require('CopilotChat.ui.debug')
 
 local M = {}
-local PLUGIN_NAME = 'CopilotChat.nvim'
+local PLUGIN_NAME = 'CopilotChat'
 local WORD = '([^%s]+)'
+
+--- @class CopilotChat.source
+--- @field bufnr number
+--- @field winnr number
 
 --- @class CopilotChat.state
 --- @field copilot CopilotChat.Copilot?
---- @field source CopilotChat.config.source?
---- @field config CopilotChat.config?
+--- @field source CopilotChat.source?
 --- @field last_prompt string?
 --- @field last_response string?
 --- @field chat CopilotChat.ui.Chat?
@@ -30,7 +33,6 @@ local state = {
 
   -- Current state tracking
   source = nil,
-  config = nil,
 
   -- Last state tracking
   last_prompt = nil,
@@ -43,8 +45,8 @@ local state = {
   debug = nil,
 }
 
----@param config CopilotChat.config
----@return CopilotChat.config.selection?
+---@param config CopilotChat.config.shared
+---@return CopilotChat.select.selection?
 local function get_selection(config)
   local bufnr = state.source and state.source.bufnr
   local winnr = state.source and state.source.winnr
@@ -64,14 +66,14 @@ end
 
 --- Highlights the selection in the source buffer.
 ---@param clear boolean
----@param config CopilotChat.config
+---@param config CopilotChat.config.shared
 local function highlight_selection(clear, config)
   local selection_ns = vim.api.nvim_create_namespace('copilot-chat-selection')
   for _, buf in ipairs(vim.api.nvim_list_bufs()) do
     vim.api.nvim_buf_clear_namespace(buf, selection_ns, 0, -1)
   end
 
-  if clear then
+  if clear or not config.highlight_selection then
     return
   end
 
@@ -93,7 +95,7 @@ local function highlight_selection(clear, config)
 end
 
 --- Updates the selection based on previous window
----@param config CopilotChat.config
+---@param config CopilotChat.config.shared
 local function update_selection(config)
   local prev_winnr = vim.fn.win_getid(vim.fn.winnr('#'))
   if prev_winnr ~= state.chat.winnr and vim.fn.win_gettype(prev_winnr) == '' then
@@ -106,7 +108,7 @@ local function update_selection(config)
   highlight_selection(false, config)
 end
 
----@param config CopilotChat.config
+---@param config CopilotChat.config.shared
 ---@return CopilotChat.ui.Diff.Diff?
 local function get_diff(config)
   local block = state.chat:get_closest_block()
@@ -171,9 +173,9 @@ end
 ---@param bufnr number
 ---@param start_line number
 ---@param end_line number
----@param config CopilotChat.config
+---@param config CopilotChat.config.shared
 local function jump_to_diff(winnr, bufnr, start_line, end_line, config)
-  vim.api.nvim_win_set_cursor(winnr, { start_line, 0 })
+  pcall(vim.api.nvim_win_set_cursor, winnr, { start_line, 0 })
   pcall(vim.api.nvim_buf_set_mark, bufnr, '<', start_line, 0, {})
   pcall(vim.api.nvim_buf_set_mark, bufnr, '>', end_line, 0, {})
   pcall(vim.api.nvim_buf_set_mark, bufnr, '[', start_line, 0, {})
@@ -182,7 +184,7 @@ local function jump_to_diff(winnr, bufnr, start_line, end_line, config)
 end
 
 ---@param diff CopilotChat.ui.Diff.Diff?
----@param config CopilotChat.config
+---@param config CopilotChat.config.shared
 local function apply_diff(diff, config)
   if not diff or not diff.bufnr then
     return
@@ -199,58 +201,51 @@ local function apply_diff(diff, config)
 end
 
 ---@param prompt string
----@param system_prompt string
----@return string, string
-local function resolve_prompts(prompt, system_prompt)
+---@param config CopilotChat.config.shared
+---@return string, CopilotChat.config
+local function resolve_prompts(prompt, config)
   local prompts_to_use = M.prompts()
-  local try_again = false
-  local result = string.gsub(prompt, '/' .. WORD, function(match)
-    local matched_prompt = prompts_to_use[match]
-    if matched_prompt then
-      if matched_prompt.kind == 'user' then
-        local out = matched_prompt.prompt
-        if out and string.match(out, '/' .. WORD) then
-          try_again = true
-        end
-        system_prompt = matched_prompt.system_prompt or system_prompt
-        return out
-      elseif matched_prompt.kind == 'system' then
-        system_prompt = matched_prompt.prompt
-        return ''
-      end
+  local depth = 0
+  local MAX_DEPTH = 10
+
+  local function resolve(inner_prompt, inner_config)
+    if depth >= MAX_DEPTH then
+      return inner_prompt, inner_config
     end
+    depth = depth + 1
 
-    return '/' .. match
-  end)
+    inner_prompt = string.gsub(inner_prompt, '/' .. WORD, function(match)
+      local p = prompts_to_use[match]
+      if p then
+        local resolved_prompt, resolved_config = resolve(p.prompt or '', p)
+        inner_config = vim.tbl_deep_extend('force', inner_config, resolved_config)
+        return resolved_prompt
+      end
 
-  if try_again then
-    return resolve_prompts(result, system_prompt)
+      return '/' .. match
+    end)
+
+    depth = depth - 1
+    return inner_prompt, inner_config
   end
 
-  return system_prompt, result
+  return resolve(prompt, config)
 end
 
 ---@param prompt string
----@param config CopilotChat.config
----@return table<CopilotChat.copilot.embed>, string
+---@param config CopilotChat.config.shared
+---@return table<CopilotChat.context.embed>, string
 local function resolve_embeddings(prompt, config)
-  local embeddings = utils.ordered_map()
-
+  local contexts = {}
   local function parse_context(prompt_context)
     local split = vim.split(prompt_context, ':')
     local context_name = table.remove(split, 1)
     local context_input = vim.trim(table.concat(split, ':'))
-    local context_value = config.contexts[context_name]
-    if context_input == '' then
-      context_input = nil
-    end
-
-    if context_value then
-      for _, embedding in ipairs(context_value.resolve(context_input, state.source)) do
-        if embedding then
-          embeddings:set(embedding.filename, embedding)
-        end
-      end
+    if M.config.contexts[context_name] then
+      table.insert(contexts, {
+        name = context_name,
+        input = (context_input ~= '' and context_input or nil),
+      })
 
       return true
     end
@@ -267,6 +262,7 @@ local function resolve_embeddings(prompt, config)
 
   if config.context then
     if type(config.context) == 'table' then
+      ---@diagnostic disable-next-line: param-type-mismatch
       for _, config_context in ipairs(config.context) do
         parse_context(config_context)
       end
@@ -275,27 +271,64 @@ local function resolve_embeddings(prompt, config)
     end
   end
 
+  local embeddings = utils.ordered_map()
+  for _, context_data in ipairs(contexts) do
+    local context_value = M.config.contexts[context_data.name]
+    for _, embedding in ipairs(context_value.resolve(context_data.input, state.source or {})) do
+      if embedding then
+        embeddings:set(embedding.filename, embedding)
+      end
+    end
+  end
+
   return embeddings:values(), prompt
 end
 
----@param config CopilotChat.config
----@param start_of_chat boolean?
-local function finish(config, start_of_chat)
-  if config.no_chat then
-    return
-  end
+local function resolve_agent(prompt, config)
+  local agents = vim.tbl_keys(state.copilot:list_agents())
+  local selected_agent = config.agent
+  prompt = prompt:gsub('@' .. WORD, function(match)
+    if vim.tbl_contains(agents, match) then
+      selected_agent = match
+      return ''
+    end
+    return '@' .. match
+  end)
 
+  return selected_agent, prompt
+end
+
+local function resolve_model(prompt, config)
+  local models = vim.tbl_keys(state.copilot:list_models())
+  local selected_model = config.model
+  prompt = prompt:gsub('%$' .. WORD, function(match)
+    if vim.tbl_contains(models, match) then
+      selected_model = match
+      return ''
+    end
+    return '$' .. match
+  end)
+
+  return selected_model, prompt
+end
+
+---@param start_of_chat boolean?
+local function finish(start_of_chat)
   if not start_of_chat then
     state.chat:append('\n\n')
   end
 
-  state.chat:append(config.question_header .. config.separator .. '\n\n')
+  state.chat:append(M.config.question_header .. M.config.separator .. '\n\n')
 
+  -- Reinsert sticky prompts from last prompt
   if state.last_prompt then
     local has_sticky = false
-    for sticky_line in state.last_prompt:gmatch('(>%s+[^\n]+)') do
-      state.chat:append(sticky_line .. '\n')
-      has_sticky = true
+    local lines = vim.split(state.last_prompt, '\n')
+    for _, line in ipairs(lines) do
+      if vim.startswith(line, '> ') then
+        state.chat:append(line .. '\n')
+        has_sticky = true
+      end
     end
     if has_sticky then
       state.chat:append('\n')
@@ -305,43 +338,43 @@ local function finish(config, start_of_chat)
   state.chat:finish()
 end
 
----@param config CopilotChat.config
 ---@param err string|table|nil
 ---@param append_newline boolean?
-local function show_error(config, err, append_newline)
+local function show_error(err, append_newline)
   err = err or 'Unknown error'
-  log.error(vim.inspect(err))
-
-  if config.no_chat then
-    return
-  end
 
   if type(err) == 'string' then
     local message = err:match('^[^:]+:[^:]+:(.+)') or err
     message = message:gsub('^%s*', '')
     err = message
   else
-    err = vim.inspect(err)
+    err = utils.make_string(err)
   end
 
   if append_newline then
     state.chat:append('\n')
   end
 
-  state.chat:append(config.error_header .. '\n```error\n' .. err .. '\n```')
-  finish(config)
+  state.chat:append(M.config.error_header .. '\n```error\n' .. err .. '\n```')
+  finish()
 end
 
 --- Map a key to a function.
----@param key CopilotChat.config.mapping
+---@param name string
 ---@param bufnr number
 ---@param fn function
-local function map_key(key, bufnr, fn)
+local function map_key(name, bufnr, fn)
+  local key = M.config.mappings[name]
   if not key then
     return
   end
   if key.normal and key.normal ~= '' then
-    vim.keymap.set('n', key.normal, fn, { buffer = bufnr, nowait = true })
+    vim.keymap.set(
+      'n',
+      key.normal,
+      fn,
+      { buffer = bufnr, nowait = true, desc = PLUGIN_NAME .. ' ' .. name:gsub('_', ' ') }
+    )
   end
   if key.insert and key.insert ~= '' then
     vim.keymap.set('i', key.insert, function()
@@ -358,16 +391,16 @@ local function map_key(key, bufnr, fn)
       else
         fn()
       end
-    end, { buffer = bufnr })
+    end, { buffer = bufnr, desc = PLUGIN_NAME .. ' ' .. name:gsub('_', ' ') })
   end
 end
 
 --- Get the info for a key.
 ---@param name string
----@param key CopilotChat.config.mapping?
 ---@param surround string|nil
 ---@return string
-local function key_to_info(name, key, surround)
+local function key_to_info(name, surround)
+  local key = M.config.mappings[name]
   if not key then
     return ''
   end
@@ -427,7 +460,7 @@ local function trigger_complete()
         local value_str = tostring(value)
         vim.api.nvim_buf_set_text(bufnr, row - 1, col, row - 1, col, { value_str })
         vim.api.nvim_win_set_cursor(0, { row, col + #value_str })
-      end, state.source)
+      end, state.source or {})
     end
 
     return
@@ -466,10 +499,20 @@ function M.complete_items(callback)
     local items = {}
 
     for name, prompt in pairs(prompts_to_use) do
+      local kind = ''
+      local info = ''
+      if prompt.prompt then
+        kind = 'user'
+        info = prompt.prompt
+      elseif prompt.system_prompt then
+        kind = 'system'
+        info = prompt.system_prompt
+      end
+
       items[#items + 1] = {
         word = '/' .. name,
-        kind = prompt.kind,
-        info = prompt.prompt,
+        kind = kind,
+        info = info,
         menu = prompt.description or '',
         icase = 1,
         dup = 0,
@@ -511,32 +554,26 @@ function M.complete_items(callback)
     end
 
     table.sort(items, function(a, b)
+      if a.kind == b.kind then
+        return a.word < b.word
+      end
       return a.kind < b.kind
     end)
 
-    vim.schedule(function()
-      callback(items)
-    end)
+    async.util.scheduler()
+    callback(items)
   end)
 end
 
 --- Get the prompts to use.
----@param skip_system boolean|nil
 ---@return table<string, CopilotChat.config.prompt>
-function M.prompts(skip_system)
-  local function get_prompt_kind(name)
-    return vim.startswith(name, 'COPILOT_') and 'system' or 'user'
-  end
-
+function M.prompts()
   local prompts_to_use = {}
 
-  if not skip_system then
-    for name, prompt in pairs(prompts) do
-      prompts_to_use[name] = {
-        prompt = prompt,
-        kind = get_prompt_kind(name),
-      }
-    end
+  for name, prompt in pairs(prompts) do
+    prompts_to_use[name] = {
+      system_prompt = prompt,
+    }
   end
 
   for name, prompt in pairs(M.config.prompts) do
@@ -544,10 +581,7 @@ function M.prompts(skip_system)
     if type(prompt) == 'string' then
       val = {
         prompt = prompt,
-        kind = get_prompt_kind(name),
       }
-    elseif not val.kind then
-      val.kind = get_prompt_kind(name)
     end
 
     prompts_to_use[name] = val
@@ -557,7 +591,7 @@ function M.prompts(skip_system)
 end
 
 --- Open the chat window.
----@param config CopilotChat.config|CopilotChat.config.prompt|nil
+---@param config CopilotChat.config.shared?
 function M.open(config)
   -- If we are already in chat window, do nothing
   if state.chat:active() then
@@ -565,7 +599,10 @@ function M.open(config)
   end
 
   config = vim.tbl_deep_extend('force', M.config, config or {})
-  state.config = config
+  if config.headless then
+    return
+  end
+
   utils.return_to_normal_mode()
   state.chat:open(config)
   state.chat:follow()
@@ -578,7 +615,7 @@ function M.close()
 end
 
 --- Toggle the chat window.
----@param config CopilotChat.config|nil
+---@param config CopilotChat.config.shared?
 function M.toggle(config)
   if state.chat:visible() then
     M.close()
@@ -587,12 +624,13 @@ function M.toggle(config)
   end
 end
 
+--- Get the last response.
 --- @returns string
 function M.response()
   return state.last_response
 end
 
---- Select a Copilot GPT model.
+--- Select default Copilot GPT model.
 function M.select_model()
   async.run(function()
     local models = vim.tbl_keys(state.copilot:list_models())
@@ -604,19 +642,18 @@ function M.select_model()
       return model
     end, models)
 
-    vim.schedule(function()
-      vim.ui.select(models, {
-        prompt = 'Select a model> ',
-      }, function(choice)
-        if choice then
-          M.config.model = choice:gsub(' %(selected%)', '')
-        end
-      end)
+    async.util.scheduler()
+    vim.ui.select(models, {
+      prompt = 'Select a model> ',
+    }, function(choice)
+      if choice then
+        M.config.model = choice:gsub(' %(selected%)', '')
+      end
     end)
   end)
 end
 
---- Select a Copilot agent.
+--- Select default Copilot agent.
 function M.select_agent()
   async.run(function()
     local agents = vim.tbl_keys(state.copilot:list_agents())
@@ -628,39 +665,37 @@ function M.select_agent()
       return agent
     end, agents)
 
-    vim.schedule(function()
-      vim.ui.select(agents, {
-        prompt = 'Select an agent> ',
-      }, function(choice)
-        if choice then
-          M.config.agent = choice:gsub(' %(selected%)', '')
-        end
-      end)
+    async.util.scheduler()
+    vim.ui.select(agents, {
+      prompt = 'Select an agent> ',
+    }, function(choice)
+      if choice then
+        M.config.agent = choice:gsub(' %(selected%)', '')
+      end
     end)
   end)
 end
 
 --- Ask a question to the Copilot model.
 ---@param prompt string?
----@param config CopilotChat.config|CopilotChat.config.prompt|nil
+---@param config CopilotChat.config.shared?
 function M.ask(prompt, config)
-  config = vim.tbl_deep_extend('force', M.config, config or {})
-  vim.diagnostic.reset(vim.api.nvim_create_namespace('copilot_diagnostics'))
-
-  if not config.no_chat then
-    M.open(config)
-  end
+  M.open(config)
 
   prompt = vim.trim(prompt or '')
   if prompt == '' then
     return
   end
 
-  if not config.no_chat then
+  vim.diagnostic.reset(vim.api.nvim_create_namespace('copilot_diagnostics'))
+  config = vim.tbl_deep_extend('force', state.chat.config, config or {})
+  config = vim.tbl_deep_extend('force', M.config, config or {})
+
+  if not config.headless then
     if config.clear_chat_on_new_prompt then
-      M.stop(true, config)
+      M.stop(true)
     elseif state.copilot:stop() then
-      finish(config, nil)
+      finish()
     end
 
     state.last_prompt = prompt
@@ -670,52 +705,35 @@ function M.ask(prompt, config)
   end
 
   -- Resolve prompt references
-  local system_prompt, resolved_prompt = resolve_prompts(prompt, config.system_prompt)
+  local prompt, config = resolve_prompts(prompt, config)
+  local system_prompt = config.system_prompt
 
   -- Remove sticky prefix
-  prompt = table.concat(
+  prompt = vim.trim(table.concat(
     vim.tbl_map(function(l)
-      return l:gsub('>%s+', '')
-    end, vim.split(resolved_prompt, '\n')),
+      return l:gsub('^>%s+', '')
+    end, vim.split(prompt, '\n')),
     '\n'
-  )
-
-  -- Resolve embeddings
-  local embeddings, embedded_prompt = resolve_embeddings(prompt, config)
-  prompt = embedded_prompt
+  ))
 
   -- Retrieve the selection
   local selection = get_selection(config)
 
-  async.run(function()
-    local agents = vim.tbl_keys(state.copilot:list_agents())
-    local selected_agent = config.agent
-    prompt = prompt:gsub('@' .. WORD, function(match)
-      if vim.tbl_contains(agents, match) then
-        selected_agent = match
-        return ''
-      end
-      return '@' .. match
-    end)
-
-    local models = vim.tbl_keys(state.copilot:list_models())
-    local selected_model = config.model
-    prompt = prompt:gsub('%$' .. WORD, function(match)
-      if vim.tbl_contains(models, match) then
-        selected_model = match
-        return ''
-      end
-      return '$' .. match
-    end)
+  local ok, err = pcall(async.run, function()
+    local embeddings, prompt = resolve_embeddings(prompt, config)
+    local selected_agent, prompt = resolve_agent(prompt, config)
+    local selected_model, prompt = resolve_model(prompt, config)
 
     local has_output = false
     local query_ok, filtered_embeddings =
       pcall(context.filter_embeddings, state.copilot, prompt, embeddings)
 
     if not query_ok then
-      vim.schedule(function()
-        show_error(config, filtered_embeddings, has_output)
-      end)
+      async.util.scheduler()
+      log.error(filtered_embeddings)
+      if not config.headless then
+        show_error(filtered_embeddings, has_output)
+      end
       return
     end
 
@@ -727,22 +745,22 @@ function M.ask(prompt, config)
         model = selected_model,
         agent = selected_agent,
         temperature = config.temperature,
-        no_history = config.no_chat,
-        on_progress = function(token)
-          vim.schedule(function()
-            if not config.no_chat then
-              state.chat:append(token)
-            end
-
-            has_output = true
-          end)
-        end,
+        no_history = config.headless,
+        on_progress = vim.schedule_wrap(function(token)
+          if not config.headless then
+            state.chat:append(token)
+          end
+          has_output = true
+        end),
       })
 
+    async.util.scheduler()
+
     if not ask_ok then
-      vim.schedule(function()
-        show_error(config, response, has_output)
-      end)
+      log.error(response)
+      if not config.headless then
+        show_error(response, has_output)
+      end
       return
     end
 
@@ -750,27 +768,31 @@ function M.ask(prompt, config)
       return
     end
 
-    if not config.no_chat then
+    if not config.headless then
       state.last_response = response
       state.chat.token_count = token_count
       state.chat.token_max_count = token_max_count
     end
 
-    vim.schedule(function()
-      finish(config)
-      if config.callback then
-        config.callback(response, state.source)
-      end
-    end)
+    if not config.headless then
+      finish()
+    end
+    if config.callback then
+      config.callback(response, state.source)
+    end
   end)
+
+  if not ok then
+    log.error(err)
+    if not config.headless then
+      show_error(err)
+    end
+  end
 end
 
 --- Stop current copilot output and optionally reset the chat ten show the help message.
 ---@param reset boolean?
----@param config CopilotChat.config?
-function M.stop(reset, config)
-  config = vim.tbl_deep_extend('force', M.config, config or {})
-
+function M.stop(reset)
   if reset then
     state.copilot:reset()
     state.chat:clear()
@@ -780,13 +802,12 @@ function M.stop(reset, config)
     state.copilot:stop()
   end
 
-  finish(config, reset)
+  finish(reset)
 end
 
 --- Reset the chat window and show the help message.
----@param config CopilotChat.config?
-function M.reset(config)
-  M.stop(true, config)
+function M.reset()
+  M.stop(true)
 end
 
 --- Save the chat history to a file.
@@ -837,8 +858,7 @@ function M.load(name, history_path)
     end
   end
 
-  finish(M.config, #history == 0)
-  M.open()
+  finish(#history == 0)
 end
 
 --- Set the log level
@@ -856,7 +876,7 @@ function M.log_level(level)
 end
 
 --- Set up the plugin
----@param config CopilotChat.config|nil
+---@param config CopilotChat.config?
 function M.setup(config)
   -- Handle changed configuration
   if config then
@@ -872,12 +892,20 @@ function M.setup(config)
             normal = key,
           }
         end
+
+        if name == 'show_system_prompt' then
+          utils.deprecate('config.mappings.' .. name, 'config.mappings.show_info')
+        end
+
+        if name == 'show_user_context' or name == 'show_user_selection' then
+          utils.deprecate('config.mappings.' .. name, 'config.mappings.show_context')
+        end
       end
     end
 
-    if config.yank_diff_register then
+    if config['yank_diff_register'] then
       utils.deprecate('config.yank_diff_register', 'config.mappings.yank_diff.register')
-      config.mappings.yank_diff.register = config.yank_diff_register
+      config.mappings.yank_diff.register = config['yank_diff_register']
     end
   end
 
@@ -904,7 +932,7 @@ function M.setup(config)
     M.log_level(M.config.log_level)
   end
 
-  vim.api.nvim_set_hl(0, 'CopilotChatSpinner', { link = 'CursorColumn', default = true })
+  vim.api.nvim_set_hl(0, 'CopilotChatSpinner', { link = 'DiagnosticInfo', default = true })
   vim.api.nvim_set_hl(0, 'CopilotChatHelp', { link = 'DiagnosticInfo', default = true })
   vim.api.nvim_set_hl(0, 'CopilotChatSelection', { link = 'Visual', default = true })
   vim.api.nvim_set_hl(
@@ -918,8 +946,8 @@ function M.setup(config)
     { link = '@punctuation.special.markdown', default = true }
   )
 
-  local overlay_help = key_to_info('close', M.config.mappings.close)
-  local diff_help = key_to_info('accept_diff', M.config.mappings.accept_diff)
+  local overlay_help = key_to_info('close')
+  local diff_help = key_to_info('accept_diff')
   if overlay_help ~= '' and diff_help ~= '' then
     diff_help = diff_help .. '\n' .. overlay_help
   end
@@ -928,7 +956,7 @@ function M.setup(config)
     state.overlay:delete()
   end
   state.overlay = Overlay('copilot-overlay', overlay_help, function(bufnr)
-    map_key(M.config.mappings.close, bufnr, function()
+    map_key('close', bufnr, function()
       state.overlay:restore(state.chat.winnr, state.chat.bufnr)
     end)
   end)
@@ -941,12 +969,12 @@ function M.setup(config)
     state.diff:delete()
   end
   state.diff = Diff(diff_help, function(bufnr)
-    map_key(M.config.mappings.close, bufnr, function()
+    map_key('close', bufnr, function()
       state.diff:restore(state.chat.winnr, state.chat.bufnr)
     end)
 
-    map_key(M.config.mappings.accept_diff, bufnr, function()
-      apply_diff(state.diff:get_diff(), state.config)
+    map_key('accept_diff', bufnr, function()
+      apply_diff(state.diff:get_diff(), state.chat.config)
     end)
   end)
 
@@ -955,9 +983,12 @@ function M.setup(config)
     state.chat:delete()
   end
   state.chat = Chat(
-    M.config.show_help and key_to_info('show_help', M.config.mappings.show_help),
+    M.config.question_header,
+    M.config.answer_header,
+    M.config.separator,
+    key_to_info('show_help'),
     function(bufnr)
-      map_key(M.config.mappings.show_help, bufnr, function()
+      map_key('show_help', bufnr, function()
         local chat_help = '**`Special tokens`**\n'
         chat_help = chat_help .. '`@<agent>` to select an agent\n'
         chat_help = chat_help .. '`#<context>` to select a context\n'
@@ -977,8 +1008,7 @@ function M.setup(config)
         end)
         for _, name in ipairs(chat_keys) do
           if name ~= 'close' then
-            local key = M.config.mappings[name]
-            local info = key_to_info(name, key, '`')
+            local info = key_to_info(name, '`')
             if info ~= '' then
               chat_help = chat_help .. info .. '\n'
             end
@@ -987,11 +1017,11 @@ function M.setup(config)
         state.overlay:show(chat_help, state.chat.winnr, 'markdown')
       end)
 
-      map_key(M.config.mappings.reset, bufnr, M.reset)
-      map_key(M.config.mappings.close, bufnr, M.close)
-      map_key(M.config.mappings.complete, bufnr, trigger_complete)
+      map_key('reset', bufnr, M.reset)
+      map_key('close', bufnr, M.close)
+      map_key('complete', bufnr, trigger_complete)
 
-      map_key(M.config.mappings.submit_prompt, bufnr, function()
+      map_key('submit_prompt', bufnr, function()
         local section = state.chat:get_closest_section()
         if not section or section.answer then
           return
@@ -1000,7 +1030,7 @@ function M.setup(config)
         M.ask(section.content)
       end)
 
-      map_key(M.config.mappings.toggle_sticky, bufnr, function()
+      map_key('toggle_sticky', bufnr, function()
         local section = state.chat:get_closest_section()
         if not section or section.answer then
           return
@@ -1044,11 +1074,11 @@ function M.setup(config)
         vim.api.nvim_win_set_cursor(0, cursor)
       end)
 
-      map_key(M.config.mappings.accept_diff, bufnr, function()
-        apply_diff(get_diff(state.config), state.config)
+      map_key('accept_diff', bufnr, function()
+        apply_diff(get_diff(state.chat.config), state.chat.config)
       end)
 
-      map_key(M.config.mappings.jump_to_diff, bufnr, function()
+      map_key('jump_to_diff', bufnr, function()
         if
           not state.source
           or not state.source.winnr
@@ -1057,36 +1087,33 @@ function M.setup(config)
           return
         end
 
-        local diff = get_diff(state.config)
+        local diff = get_diff(state.chat.config)
         if not diff then
           return
         end
 
         local diff_bufnr = diff.bufnr
 
-        -- Try to find existing buffer first
+        -- If buffer is not found, try to load it
         if not diff_bufnr then
-          for _, buf in ipairs(vim.api.nvim_list_bufs()) do
-            if utils.filename_same(vim.api.nvim_buf_get_name(buf), diff.filename) then
-              diff_bufnr = buf
-              break
-            end
-          end
+          diff_bufnr = vim.fn.bufadd(diff.filename)
+          vim.fn.bufload(diff_bufnr)
         end
 
-        -- Create new empty buffer if doesn't exist
-        if not diff_bufnr then
-          diff_bufnr = vim.api.nvim_create_buf(true, false)
-          vim.api.nvim_buf_set_name(diff_bufnr, diff.filename)
-          vim.bo[diff_bufnr].filetype = diff.filetype
-        end
-
+        state.source.bufnr = diff_bufnr
         vim.api.nvim_win_set_buf(state.source.winnr, diff_bufnr)
-        jump_to_diff(state.source.winnr, diff_bufnr, diff.start_line, diff.end_line, state.config)
+
+        jump_to_diff(
+          state.source.winnr,
+          diff_bufnr,
+          diff.start_line,
+          diff.end_line,
+          state.chat.config
+        )
       end)
 
-      map_key(M.config.mappings.quickfix_diffs, bufnr, function()
-        local selection = get_selection(state.config)
+      map_key('quickfix_diffs', bufnr, function()
+        local selection = get_selection(state.chat.config)
         local items = {}
 
         for _, section in ipairs(state.chat.sections) do
@@ -1117,8 +1144,8 @@ function M.setup(config)
         vim.cmd('copen')
       end)
 
-      map_key(M.config.mappings.yank_diff, bufnr, function()
-        local diff = get_diff(state.config)
+      map_key('yank_diff', bufnr, function()
+        local diff = get_diff(state.chat.config)
         if not diff then
           return
         end
@@ -1126,8 +1153,8 @@ function M.setup(config)
         vim.fn.setreg(M.config.mappings.yank_diff.register, diff.change)
       end)
 
-      map_key(M.config.mappings.show_diff, bufnr, function()
-        local diff = get_diff(state.config)
+      map_key('show_diff', bufnr, function()
+        local diff = get_diff(state.chat.config)
         if not diff then
           return
         end
@@ -1135,49 +1162,104 @@ function M.setup(config)
         state.diff:show(diff, state.chat.winnr)
       end)
 
-      map_key(M.config.mappings.show_system_prompt, bufnr, function()
+      map_key('show_info', bufnr, function()
         local section = state.chat:get_closest_section()
-        local system_prompt = state.config.system_prompt
-        if section and not section.answer then
-          system_prompt = resolve_prompts(section.content, system_prompt)
-        end
-        if not system_prompt then
+        if not section or section.answer then
           return
         end
 
-        state.overlay:show(vim.trim(system_prompt) .. '\n', state.chat.winnr, 'markdown')
-      end)
+        local lines = {}
+        local prompt, config = resolve_prompts(section.content, state.chat.config)
+        local system_prompt = config.system_prompt
 
-      map_key(M.config.mappings.show_user_selection, bufnr, function()
-        local selection = get_selection(state.config)
-        if not selection then
-          return
-        end
+        async.run(function()
+          local selected_agent = resolve_agent(prompt, config)
+          local selected_model = resolve_model(prompt, config)
 
-        state.overlay:show(selection.content, state.chat.winnr, selection.filetype)
-      end)
-
-      map_key(M.config.mappings.show_user_context, bufnr, function()
-        local section = state.chat:get_closest_section()
-        local embeddings = {}
-        if section and not section.answer then
-          embeddings = resolve_embeddings(section.content, state.config)
-        end
-
-        local text = ''
-        for _, embedding in ipairs(embeddings) do
-          local lines = vim.split(embedding.content, '\n')
-          local preview = table.concat(vim.list_slice(lines, 1, math.min(10, #lines)), '\n')
-          local header = string.format('**`%s`** (%s lines)', embedding.filename, #lines)
-          if #lines > 10 then
-            header = header .. ' (truncated)'
+          if selected_model then
+            table.insert(lines, '**Model**')
+            table.insert(lines, '```')
+            table.insert(lines, selected_model)
+            table.insert(lines, '```')
+            table.insert(lines, '')
           end
 
-          text = text
-            .. string.format('%s\n```%s\n%s\n```\n\n', header, embedding.filetype, preview)
+          if selected_agent then
+            table.insert(lines, '**Agent**')
+            table.insert(lines, '```')
+            table.insert(lines, selected_agent)
+            table.insert(lines, '```')
+            table.insert(lines, '')
+          end
+
+          if system_prompt then
+            table.insert(lines, '**System Prompt**')
+            table.insert(lines, '```')
+            for _, line in ipairs(vim.split(vim.trim(system_prompt), '\n')) do
+              table.insert(lines, line)
+            end
+            table.insert(lines, '```')
+            table.insert(lines, '')
+          end
+
+          async.util.scheduler()
+          state.overlay:show(
+            vim.trim(table.concat(lines, '\n')) .. '\n',
+            state.chat.winnr,
+            'markdown'
+          )
+        end)
+      end)
+
+      map_key('show_context', bufnr, function()
+        local section = state.chat:get_closest_section()
+        if not section or section.answer then
+          return
         end
 
-        state.overlay:show(vim.trim(text) .. '\n', state.chat.winnr, 'markdown')
+        local lines = {}
+
+        local selection = get_selection(state.chat.config)
+        if selection then
+          table.insert(lines, '**Selection**')
+          table.insert(lines, '```' .. selection.filetype)
+          for _, line in ipairs(vim.split(selection.content, '\n')) do
+            table.insert(lines, line)
+          end
+          table.insert(lines, '```')
+          table.insert(lines, '')
+        end
+
+        async.run(function()
+          local embeddings = {}
+          if section and not section.answer then
+            embeddings = resolve_embeddings(section.content, state.chat.config)
+          end
+
+          for _, embedding in ipairs(embeddings) do
+            local embed_lines = vim.split(embedding.content, '\n')
+            local preview = vim.list_slice(embed_lines, 1, math.min(10, #embed_lines))
+            local header = string.format('**%s** (%s lines)', embedding.filename, #embed_lines)
+            if #embed_lines > 10 then
+              header = header .. ' (truncated)'
+            end
+
+            table.insert(lines, header)
+            table.insert(lines, '```' .. embedding.filetype)
+            for _, line in ipairs(preview) do
+              table.insert(lines, line)
+            end
+            table.insert(lines, '```')
+            table.insert(lines, '')
+          end
+
+          async.util.scheduler()
+          state.overlay:show(
+            vim.trim(table.concat(lines, '\n')) .. '\n',
+            state.chat.winnr,
+            'markdown'
+          )
+        end)
       end)
 
       vim.api.nvim_create_autocmd({ 'BufEnter', 'BufLeave' }, {
@@ -1186,9 +1268,9 @@ function M.setup(config)
           local is_enter = ev.event == 'BufEnter'
 
           if is_enter then
-            update_selection(state.config)
+            update_selection(state.chat.config)
           else
-            highlight_selection(true, state.config)
+            highlight_selection(true, state.chat.config)
           end
         end,
       })
@@ -1218,32 +1300,51 @@ function M.setup(config)
             end
           end,
         })
+
+        -- Add popup and noinsert completeopt if not present
+        if vim.fn.has('nvim-0.11.0') == 1 then
+          local completeopt = vim.opt.completeopt:get()
+          local updated = false
+          if not vim.tbl_contains(completeopt, 'noinsert') then
+            updated = true
+            table.insert(completeopt, 'noinsert')
+          end
+          if not vim.tbl_contains(completeopt, 'popup') then
+            updated = true
+            table.insert(completeopt, 'popup')
+          end
+          if updated then
+            vim.bo[bufnr].completeopt = table.concat(completeopt, ',')
+          end
+        end
       end
 
-      finish(M.config, true)
+      finish(true)
     end
   )
 
-  for name, prompt in pairs(M.prompts(true)) do
-    vim.api.nvim_create_user_command('CopilotChat' .. name, function(args)
-      local input = prompt.prompt
-      if args.args and vim.trim(args.args) ~= '' then
-        input = input .. ' ' .. args.args
-      end
-      if input then
-        M.ask(input, prompt)
-      end
-    end, {
-      nargs = '*',
-      force = true,
-      range = true,
-      desc = prompt.description or (PLUGIN_NAME .. ' ' .. name),
-    })
+  for name, prompt in pairs(M.prompts()) do
+    if prompt.prompt then
+      vim.api.nvim_create_user_command('CopilotChat' .. name, function(args)
+        local input = prompt.prompt
+        if args.args and vim.trim(args.args) ~= '' then
+          input = input .. ' ' .. args.args
+        end
+        if input then
+          M.ask(input, prompt)
+        end
+      end, {
+        nargs = '*',
+        force = true,
+        range = true,
+        desc = prompt.description or (PLUGIN_NAME .. ' ' .. name),
+      })
 
-    if prompt.mapping then
-      vim.keymap.set({ 'n', 'v' }, prompt.mapping, function()
-        M.ask(prompt.prompt, prompt)
-      end, { desc = prompt.description or (PLUGIN_NAME .. ' ' .. name) })
+      if prompt.mapping then
+        vim.keymap.set({ 'n', 'v' }, prompt.mapping, function()
+          M.ask(prompt.prompt, prompt)
+        end, { desc = prompt.description or (PLUGIN_NAME .. ' ' .. name) })
+      end
     end
   end
 

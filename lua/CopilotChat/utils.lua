@@ -1,14 +1,18 @@
+local async = require('plenary.async')
+local curl = require('plenary.curl')
+local scandir = require('plenary.scandir')
+
 local M = {}
 M.timers = {}
 
----@class CopilotChat.utils.Class
+---@class Class
 ---@field new fun(...):table
 ---@field init fun(self, ...)
 
 --- Create class
 ---@param fn function The class constructor
 ---@param parent table? The parent class
----@return CopilotChat.utils.Class
+---@return Class
 function M.class(fn, parent)
   local out = {}
   out.__index = out
@@ -36,6 +40,43 @@ function M.class(fn, parent)
   end
 
   return out
+end
+
+---@class OrderedMap
+---@field set fun(self:OrderedMap, key:any, value:any)
+---@field get fun(self:OrderedMap, key:any):any
+---@field keys fun(self:OrderedMap):table
+---@field values fun(self:OrderedMap):table
+
+--- Create an ordered map
+---@return OrderedMap
+function M.ordered_map()
+  return {
+    _keys = {},
+    _data = {},
+    set = function(self, key, value)
+      if not self._data[key] then
+        table.insert(self._keys, key)
+      end
+      self._data[key] = value
+    end,
+
+    get = function(self, key)
+      return self._data[key]
+    end,
+
+    keys = function(self)
+      return self._keys
+    end,
+
+    values = function(self)
+      local result = {}
+      for _, key in ipairs(self._keys) do
+        table.insert(result, self._data[key])
+      end
+      return result
+    end,
+  }
 end
 
 --- Check if the current version of neovim is stable
@@ -121,6 +162,21 @@ function M.debounce(id, fn, delay)
   M.timers[id] = vim.defer_fn(fn, delay)
 end
 
+--- Create key-value list from table
+---@param tbl table The table
+---@return table
+function M.kv_list(tbl)
+  local result = {}
+  for k, v in pairs(tbl) do
+    table.insert(result, {
+      key = k,
+      value = v,
+    })
+  end
+
+  return result
+end
+
 --- Check if a buffer is valid
 ---@param bufnr number? The buffer number
 ---@return boolean
@@ -137,6 +193,24 @@ function M.filename_same(file1, file2)
     return false
   end
   return vim.fn.fnamemodify(file1, ':p') == vim.fn.fnamemodify(file2, ':p')
+end
+
+--- Get the filetype of a file
+---@param filename string The file name
+---@return string|nil
+function M.filetype(filename)
+  local ft = vim.filetype.match({ filename = filename })
+  if ft == '' then
+    return nil
+  end
+  return ft
+end
+
+--- Get the file path
+---@param filename string The file name
+---@return string
+function M.filepath(filename)
+  return vim.fn.fnamemodify(filename, ':p:.')
 end
 
 --- Generate a UUID
@@ -171,11 +245,30 @@ function M.quick_hash(str)
   return #str .. str:sub(1, 32) .. str:sub(-32)
 end
 
+--- Make a string from arguments
+---@vararg any The arguments
+---@return string
+function M.make_string(...)
+  local t = {}
+  for i = 1, select('#', ...) do
+    local x = select(i, ...)
+
+    if type(x) == 'table' then
+      x = vim.inspect(x)
+    else
+      x = tostring(x)
+    end
+
+    t[#t + 1] = x
+  end
+  return table.concat(t, ' ')
+end
+
 --- Get current working directory for target window
 ---@param winnr number? The buffer number
 ---@return string
 function M.win_cwd(winnr)
-  if not winnr or not vim.api.nvim_win_is_valid(winnr) then
+  if not winnr then
     return '.'
   end
 
@@ -187,41 +280,94 @@ function M.win_cwd(winnr)
   return dir
 end
 
----@class OrderedMap
----@field set fun(self:OrderedMap, key:any, value:any)
----@field get fun(self:OrderedMap, key:any):any
----@field keys fun(self:OrderedMap):table
----@field values fun(self:OrderedMap):table
+--- Send curl get request
+---@param url string The url
+---@param opts table? The options
+M.curl_get = async.wrap(function(url, opts, callback)
+  curl.get(
+    url,
+    vim.tbl_deep_extend('force', opts or {}, {
+      callback = callback,
+      on_error = function(err)
+        err = M.make_string(err and err.stderr or err)
+        callback(nil, err)
+      end,
+    })
+  )
+end, 3)
 
---- Create an ordered map
----@return OrderedMap
-function M.ordered_map()
-  return {
-    _keys = {},
-    _data = {},
-    set = function(self, key, value)
-      if not self._data[key] then
-        table.insert(self._keys, key)
-      end
-      self._data[key] = value
-    end,
+--- Send curl post request
+---@param url string The url
+---@param opts table? The options
+M.curl_post = async.wrap(function(url, opts, callback)
+  curl.post(
+    url,
+    vim.tbl_deep_extend('force', opts or {}, {
+      callback = callback,
+      on_error = function(err)
+        err = M.make_string(err and err.stderr or err)
+        callback(nil, err)
+      end,
+    })
+  )
+end, 3)
 
-    get = function(self, key)
-      return self._data[key]
-    end,
+--- Scan a directory
+---@param path string The directory path
+---@param opts table The options
+M.scan_dir = async.wrap(function(path, opts, callback)
+  scandir.scan_dir_async(
+    path,
+    vim.tbl_deep_extend('force', opts, {
+      on_exit = callback,
+    })
+  )
+end, 3)
 
-    keys = function(self)
-      return self._keys
-    end,
-
-    values = function(self)
-      local result = {}
-      for _, key in ipairs(self._keys) do
-        table.insert(result, self._data[key])
-      end
-      return result
-    end,
-  }
+--- Check if a file exists
+---@param path string The file path
+M.file_exists = function(path)
+  local err, stat = async.uv.fs_stat(path)
+  return err == nil and stat ~= nil
 end
+
+--- Get last modified time of a file
+---@param path string The file path
+---@return number?
+M.file_mtime = function(path)
+  local err, stat = async.uv.fs_stat(path)
+  if err or not stat then
+    return nil
+  end
+  return stat.mtime.sec
+end
+
+--- Read a file
+---@param path string The file path
+M.read_file = function(path)
+  local err, fd = async.uv.fs_open(path, 'r', 438)
+  if err or not fd then
+    return nil
+  end
+
+  local err, stat = async.uv.fs_fstat(fd)
+  if err or not stat then
+    async.uv.fs_close(fd)
+    return nil
+  end
+
+  local err, data = async.uv.fs_read(fd, stat.size, 0)
+  async.uv.fs_close(fd)
+  if err or not data then
+    return nil
+  end
+  return data
+end
+
+--- Call a system command
+---@param cmd table The command
+M.system = async.wrap(function(cmd, callback)
+  vim.system(cmd, { text = true }, callback)
+end, 2)
 
 return M

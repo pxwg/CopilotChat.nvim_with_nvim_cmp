@@ -13,12 +13,14 @@ function M.help_actions()
 end
 
 --- User prompt actions
----@param config CopilotChat.config?: The chat configuration
+---@param config CopilotChat.config.shared?: The chat configuration
 ---@return CopilotChat.integrations.actions?: The prompt actions
 function M.prompt_actions(config)
   local actions = {}
-  for name, prompt in pairs(chat.prompts(true)) do
-    actions[name] = vim.tbl_extend('keep', prompt, config or {})
+  for name, prompt in pairs(chat.prompts()) do
+    if prompt.prompt then
+      actions[name] = vim.tbl_extend('keep', prompt, config or {})
+    end
   end
   return {
     prompt = 'Copilot Chat Prompt Actions',

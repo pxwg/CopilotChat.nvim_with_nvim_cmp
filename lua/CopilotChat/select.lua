@@ -1,3 +1,18 @@
+---@class CopilotChat.select.selection.diagnostic
+---@field content string
+---@field start_line number
+---@field end_line number
+---@field severity string
+
+---@class CopilotChat.select.selection
+---@field content string
+---@field start_line number
+---@field end_line number
+---@field filename string
+---@field filetype string
+---@field bufnr number
+---@field diagnostics table<CopilotChat.select.selection.diagnostic>?
+
 local utils = require('CopilotChat.utils')
 
 local M = {}
@@ -6,7 +21,7 @@ local M = {}
 --- @param bufnr number
 --- @param start_line number
 --- @param end_line number
---- @return table<CopilotChat.config.selection.diagnostic>|nil
+--- @return table<CopilotChat.select.selection.diagnostic>|nil
 local function get_diagnostics_in_range(bufnr, start_line, end_line)
   local diagnostics = vim.diagnostic.get(bufnr)
   local range_diagnostics = {}
@@ -33,8 +48,8 @@ local function get_diagnostics_in_range(bufnr, start_line, end_line)
 end
 
 --- Select and process current visual selection
---- @param source CopilotChat.config.source
---- @return CopilotChat.config.selection|nil
+--- @param source CopilotChat.source
+--- @return CopilotChat.select.selection|nil
 function M.visual(source)
   local bufnr = source.bufnr
   local start_line = unpack(vim.api.nvim_buf_get_mark(bufnr, '<'))
@@ -67,8 +82,8 @@ function M.visual(source)
 end
 
 --- Select and process whole buffer
---- @param source CopilotChat.config.source
---- @return CopilotChat.config.selection|nil
+--- @param source CopilotChat.source
+--- @return CopilotChat.select.selection|nil
 function M.buffer(source)
   local bufnr = source.bufnr
   local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
@@ -90,8 +105,8 @@ function M.buffer(source)
 end
 
 --- Select and process current line
---- @param source CopilotChat.config.source
---- @return CopilotChat.config.selection|nil
+--- @param source CopilotChat.source
+--- @return CopilotChat.select.selection|nil
 function M.line(source)
   local bufnr = source.bufnr
   local winnr = source.winnr
@@ -115,8 +130,8 @@ function M.line(source)
 end
 
 --- Select and process contents of unnamed register ("). This register contains last deleted, changed or yanked content.
---- @param source CopilotChat.config.source
---- @return CopilotChat.config.selection|nil
+--- @param source CopilotChat.source
+--- @return CopilotChat.select.selection|nil
 function M.unnamed(source)
   local bufnr = source.bufnr
   local start_line = unpack(vim.api.nvim_buf_get_mark(bufnr, '['))
@@ -149,12 +164,12 @@ function M.unnamed(source)
 end
 
 function M.clipboard()
-  utils.deprecated('selection.clipboard', 'context.register:+')
+  utils.deprecate('selection.clipboard', 'context.register:+')
   return nil
 end
 
 function M.gitdiff()
-  utils.deprecated('selection.gitdiff', 'context.gitdiff')
+  utils.deprecate('selection.gitdiff', 'context.gitdiff')
   return nil
 end
 

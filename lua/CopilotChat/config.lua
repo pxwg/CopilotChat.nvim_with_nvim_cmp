@@ -3,38 +3,15 @@ local context = require('CopilotChat.context')
 local select = require('CopilotChat.select')
 local utils = require('CopilotChat.utils')
 
---- @class CopilotChat.config.source
---- @field bufnr number
---- @field winnr number
-
----@class CopilotChat.config.selection.diagnostic
----@field content string
----@field start_line number
----@field end_line number
----@field severity string
-
----@class CopilotChat.config.selection
----@field content string
----@field start_line number
----@field end_line number
----@field filename string
----@field filetype string
----@field bufnr number
----@field diagnostics table<CopilotChat.config.selection.diagnostic>?
-
 ---@class CopilotChat.config.context
 ---@field description string?
----@field input fun(callback: fun(input: string?), source: CopilotChat.config.source)?
----@field resolve fun(input: string?, source: CopilotChat.config.source):table<CopilotChat.copilot.embed>
+---@field input fun(callback: fun(input: string?), source: CopilotChat.source)?
+---@field resolve fun(input: string?, source: CopilotChat.source):table<CopilotChat.context.embed>
 
----@class CopilotChat.config.prompt
+---@class CopilotChat.config.prompt : CopilotChat.config.shared
 ---@field prompt string?
 ---@field description string?
----@field kind string?
 ---@field mapping string?
----@field system_prompt string?
----@field callback fun(response: string, source: CopilotChat.config.source)?
----@field selection nil|fun(source: CopilotChat.config.source):CopilotChat.config.selection?
 
 ---@class CopilotChat.config.window
 ---@field layout string?
@@ -53,6 +30,9 @@ local utils = require('CopilotChat.utils')
 ---@field insert string?
 ---@field detail string?
 
+---@class CopilotChat.config.mapping.register : CopilotChat.config.mapping
+---@field register string?
+
 ---@class CopilotChat.config.mappings
 ---@field complete CopilotChat.config.mapping?
 ---@field close CopilotChat.config.mapping?
@@ -62,49 +42,49 @@ local utils = require('CopilotChat.utils')
 ---@field accept_diff CopilotChat.config.mapping?
 ---@field jump_to_diff CopilotChat.config.mapping?
 ---@field quickfix_diffs CopilotChat.config.mapping?
----@field yank_diff CopilotChat.config.mapping?
+---@field yank_diff CopilotChat.config.mapping.register?
 ---@field show_diff CopilotChat.config.mapping?
----@field show_system_prompt CopilotChat.config.mapping?
----@field show_user_selection CopilotChat.config.mapping?
----@field show_user_context CopilotChat.config.mapping?
+---@field show_info CopilotChat.config.mapping?
+---@field show_context CopilotChat.config.mapping?
 ---@field show_help CopilotChat.config.mapping?
 
---- CopilotChat default configuration
----@class CopilotChat.config
----@field debug boolean?
----@field log_level string?
----@field proxy string?
----@field allow_insecure boolean?
+---@class CopilotChat.config.shared
 ---@field system_prompt string?
 ---@field model string?
 ---@field agent string?
 ---@field context string|table<string>|nil
 ---@field temperature number?
+---@field headless boolean?
+---@field callback fun(response: string, source: CopilotChat.source)?
+---@field selection nil|fun(source: CopilotChat.source):CopilotChat.select.selection?
+---@field window CopilotChat.config.window?
+---@field show_help boolean?
+---@field show_folds boolean?
+---@field highlight_selection boolean?
+---@field highlight_headers boolean?
+---@field auto_follow_cursor boolean?
+---@field auto_insert_mode boolean?
+---@field insert_at_end boolean?
+---@field clear_chat_on_new_prompt boolean?
+
+--- CopilotChat default configuration
+---@class CopilotChat.config : CopilotChat.config.shared
+---@field debug boolean?
+---@field log_level string?
+---@field proxy string?
+---@field allow_insecure boolean?
+---@field chat_autocomplete boolean?
+---@field history_path string?
 ---@field question_header string?
 ---@field answer_header string?
 ---@field error_header string?
 ---@field separator string?
----@field chat_autocomplete boolean?
----@field show_folds boolean?
----@field show_help boolean?
----@field auto_follow_cursor boolean?
----@field auto_insert_mode boolean?
----@field clear_chat_on_new_prompt boolean?
----@field highlight_selection boolean?
----@field highlight_headers boolean?
----@field history_path string?
----@field callback fun(response: string, source: CopilotChat.config.source)?
----@field no_chat boolean?
----@field selection nil|fun(source: CopilotChat.config.source):CopilotChat.config.selection?
 ---@field contexts table<string, CopilotChat.config.context>?
 ---@field prompts table<string, CopilotChat.config.prompt|string>?
----@field window CopilotChat.config.window?
 ---@field mappings CopilotChat.config.mappings?
 return {
-  debug = false, -- Enable debug logging (same as 'log_level = 'debug')
-  log_level = 'info', -- Log level to use, 'trace', 'debug', 'info', 'warn', 'error', 'fatal'
-  proxy = nil, -- [protocol://]host[:port] Use this proxy
-  allow_insecure = false, -- Allow insecure server connections
+
+  -- Shared config starts here (can be passed to functions at runtime and configured via setup function)
 
   system_prompt = prompts.COPILOT_INSTRUCTIONS, -- System prompt to use (can be specified manually in prompt via /).
   model = 'gpt-4o', -- Default model to use, see ':CopilotChatModels' for available models (can be specified manually in prompt via $).
@@ -112,34 +92,57 @@ return {
   context = nil, -- Default context or array of contexts to use (can be specified manually in prompt via #).
   temperature = 0.1, -- GPT result temperature
 
-  question_header = '## User ', -- Header to use for user questions
-  answer_header = '## Copilot ', -- Header to use for AI answers
-  error_header = '## Error ', -- Header to use for errors
-  separator = '───', -- Separator to use in chat
-
-  chat_autocomplete = true, -- Enable chat autocompletion (when disabled, requires manual `mappings.complete` trigger)
-  show_folds = true, -- Shows folds for sections in chat
-  show_help = true, -- Shows help message as virtual lines when waiting for user input
-  auto_follow_cursor = true, -- Auto-follow cursor in chat
-  auto_insert_mode = false, -- Automatically enter insert mode when opening window and on new prompt
-  insert_at_end = false, -- Move cursor to end of buffer when inserting text
-  clear_chat_on_new_prompt = false, -- Clears chat on every new prompt
-  highlight_selection = true, -- Highlight selection
-  highlight_headers = true, -- Highlight headers in chat, disable if using markdown renderers (like render-markdown.nvim)
-
-  history_path = vim.fn.stdpath('data') .. '/copilotchat_history', -- Default path to stored history
+  headless = false, -- Do not write to chat buffer and use history(useful for using callback for custom processing)
   callback = nil, -- Callback to use when ask response is received
-  no_chat = false, -- Do not write to chat buffer and use history(useful for using callback for custom processing)
 
   -- default selection
   selection = function(source)
     return select.visual(source) or select.buffer(source)
   end,
 
+  -- default window options
+  window = {
+    layout = 'vertical', -- 'vertical', 'horizontal', 'float', 'replace'
+    width = 0.5, -- fractional width of parent, or absolute width in columns when > 1
+    height = 0.5, -- fractional height of parent, or absolute height in rows when > 1
+    -- Options below only apply to floating windows
+    relative = 'editor', -- 'editor', 'win', 'cursor', 'mouse'
+    border = 'single', -- 'none', single', 'double', 'rounded', 'solid', 'shadow'
+    row = nil, -- row position of the window, default is centered
+    col = nil, -- column position of the window, default is centered
+    title = 'Copilot Chat', -- title of chat window
+    footer = nil, -- footer of chat window
+    zindex = 1, -- determines if window is on top or below other floating windows
+  },
+
+  show_help = true, -- Shows help message as virtual lines when waiting for user input
+  show_folds = true, -- Shows folds for sections in chat
+  highlight_selection = true, -- Highlight selection
+  highlight_headers = true, -- Highlight headers in chat, disable if using markdown renderers (like render-markdown.nvim)
+  auto_follow_cursor = true, -- Auto-follow cursor in chat
+  auto_insert_mode = false, -- Automatically enter insert mode when opening window and on new prompt
+  insert_at_end = false, -- Move cursor to end of buffer when inserting text
+  clear_chat_on_new_prompt = false, -- Clears chat on every new prompt
+
+  -- Static config starts here (can be configured only via setup function)
+
+  debug = false, -- Enable debug logging (same as 'log_level = 'debug')
+  log_level = 'info', -- Log level to use, 'trace', 'debug', 'info', 'warn', 'error', 'fatal'
+  proxy = nil, -- [protocol://]host[:port] Use this proxy
+  allow_insecure = false, -- Allow insecure server connections
+
+  chat_autocomplete = true, -- Enable chat autocompletion (when disabled, requires manual `mappings.complete` trigger)
+  history_path = vim.fn.stdpath('data') .. '/copilotchat_history', -- Default path to stored history
+
+  question_header = '## User ', -- Header to use for user questions
+  answer_header = '## Copilot ', -- Header to use for AI answers
+  error_header = '## Error ', -- Header to use for errors
+  separator = '───', -- Separator to use in chat
+
   -- default contexts
   contexts = {
     buffer = {
-      description = 'Includes specified buffer in chat context (default current). Supports input.',
+      description = 'Includes specified buffer in chat context. Supports input (default current).',
       input = function(callback)
         vim.ui.select(
           vim.tbl_map(
@@ -162,13 +165,14 @@ return {
         )
       end,
       resolve = function(input, source)
+        input = input and tonumber(input) or source.bufnr
         return {
-          context.buffer(input and tonumber(input) or source.bufnr),
+          context.buffer(input),
         }
       end,
     },
     buffers = {
-      description = 'Includes all buffers in chat context (default listed). Supports input.',
+      description = 'Includes all buffers in chat context. Supports input (default listed).',
       input = function(callback)
         vim.ui.select({ 'listed', 'visible' }, {
           prompt = 'Select buffer scope> ',
@@ -176,14 +180,7 @@ return {
       end,
       resolve = function(input)
         input = input or 'listed'
-        return vim.tbl_map(
-          context.buffer,
-          vim.tbl_filter(function(b)
-            return utils.buf_valid(b)
-              and vim.fn.buflisted(b) == 1
-              and (input == 'listed' or #vim.fn.win_findbuf(b) > 0)
-          end, vim.api.nvim_list_bufs())
-        )
+        return context.buffers(input)
       end,
     },
     file = {
@@ -205,34 +202,58 @@ return {
       end,
     },
     files = {
-      description = 'Includes all non-hidden filenames in the current workspace in chat context. Supports input.',
+      description = 'Includes all non-hidden files in the current workspace in chat context. Supports input (default list).',
       input = function(callback)
-        vim.ui.input({
-          prompt = 'Enter a file pattern> ',
-          default = '**/*',
-        }, callback)
+        local choices = utils.kv_list({
+          list = 'Only lists file names',
+          full = 'Includes file content for each file found. Can be slow on large workspaces, use with care.',
+        })
+
+        vim.ui.select(choices, {
+          prompt = 'Select files content> ',
+          format_item = function(choice)
+            return choice.key .. ' - ' .. choice.value
+          end,
+        }, function(choice)
+          callback(choice and choice.key)
+        end)
       end,
       resolve = function(input, source)
-        return context.files(input, source.winnr)
+        return context.files(source.winnr, input == 'full')
       end,
     },
     git = {
-      description = 'Includes current git diff in chat context (default unstaged). Supports input.',
+      description = 'Requires `git`. Includes current git diff in chat context. Supports input (default unstaged).',
       input = function(callback)
         vim.ui.select({ 'unstaged', 'staged' }, {
           prompt = 'Select diff type> ',
         }, callback)
       end,
       resolve = function(input, source)
+        input = input or 'unstaged'
         return {
           context.gitdiff(input, source.winnr),
         }
       end,
     },
-    register = {
-      description = 'Includes contents of register in chat context (default +, e.g clipboard). Supports input.',
+    url = {
+      description = 'Includes content of provided URL in chat context. Supports input.',
       input = function(callback)
-        local registers = {
+        vim.ui.input({
+          prompt = 'Enter URL> ',
+          default = 'https://',
+        }, callback)
+      end,
+      resolve = function(input)
+        return {
+          context.url(input),
+        }
+      end,
+    },
+    register = {
+      description = 'Includes contents of register in chat context. Supports input (default +, e.g clipboard).',
+      input = function(callback)
+        local choices = utils.kv_list({
           ['+'] = 'synchronized with the system clipboard',
           ['*'] = 'synchronized with the selection clipboard',
           ['"'] = 'last deleted, changed, or yanked content',
@@ -244,24 +265,19 @@ return {
           ['#'] = 'alternate buffer',
           ['='] = 'result of an expression',
           ['/'] = 'last search pattern',
-        }
+        })
 
-        vim.ui.select(
-          vim.tbl_map(function(k)
-            return { id = k, name = k .. ' - ' .. (registers[k] or '') }
-          end, vim.tbl_keys(registers)),
-          {
-            prompt = 'Select a register> ',
-            format_item = function(item)
-              return item.name
-            end,
-          },
-          function(choice)
-            callback(choice and choice.id)
-          end
-        )
+        vim.ui.select(choices, {
+          prompt = 'Select a register> ',
+          format_item = function(choice)
+            return choice.key .. ' - ' .. choice.value
+          end,
+        }, function(choice)
+          callback(choice and choice.key)
+        end)
       end,
       resolve = function(input)
+        input = input or '+'
         return {
           context.register(input),
         }
@@ -333,21 +349,6 @@ return {
     },
   },
 
-  -- default window options
-  window = {
-    layout = 'vertical', -- 'vertical', 'horizontal', 'float', 'replace'
-    width = 0.5, -- fractional width of parent, or absolute width in columns when > 1
-    height = 0.5, -- fractional height of parent, or absolute height in rows when > 1
-    -- Options below only apply to floating windows
-    relative = 'editor', -- 'editor', 'win', 'cursor', 'mouse'
-    border = 'single', -- 'none', single', 'double', 'rounded', 'solid', 'shadow'
-    row = nil, -- row position of the window, default is centered
-    col = nil, -- column position of the window, default is centered
-    title = 'Copilot Chat', -- title of chat window
-    footer = nil, -- footer of chat window
-    zindex = 1, -- determines if window is on top or below other floating windows
-  },
-
   -- default mappings
   mappings = {
     complete = {
@@ -386,13 +387,10 @@ return {
     show_diff = {
       normal = 'gd',
     },
-    show_system_prompt = {
-      normal = 'gp',
+    show_info = {
+      normal = 'gi',
     },
-    show_user_selection = {
-      normal = 'gs',
-    },
-    show_user_context = {
+    show_context = {
       normal = 'gc',
     },
     show_help = {

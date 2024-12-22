@@ -1,11 +1,6 @@
----@class CopilotChat.copilot.embed
----@field content string
----@field filename string
----@field filetype string
-
 ---@class CopilotChat.copilot.ask.opts
----@field selection CopilotChat.config.selection?
----@field embeddings table<CopilotChat.copilot.embed>?
+---@field selection CopilotChat.select.selection?
+---@field embeddings table<CopilotChat.context.embed>?
 ---@field system_prompt string?
 ---@field model string?
 ---@field agent string?
@@ -13,22 +8,21 @@
 ---@field no_history boolean?
 ---@field on_progress nil|fun(response: string):nil
 
----@class CopilotChat.copilot.embed.opts
----@field model string?
----@field chunk_size number?
-
-local async = require('plenary.async')
 local log = require('plenary.log')
-local curl = require('plenary.curl')
 local prompts = require('CopilotChat.prompts')
 local tiktoken = require('CopilotChat.tiktoken')
+local notify = require('CopilotChat.notify')
 local utils = require('CopilotChat.utils')
 local class = utils.class
 local temp_file = utils.temp_file
 
 --- Constants
 local CONTEXT_FORMAT = '[#file:%s](#file:%s-context)'
-local BIG_FILE_THRESHOLD = 2000
+local LINE_CHARACTERS = 100
+local BIG_FILE_THRESHOLD = 2000 * LINE_CHARACTERS
+local BIG_EMBED_THRESHOLD = 200 * LINE_CHARACTERS
+local EMBED_MODEL = 'text-embedding-3-small'
+local TRUNCATED = '... (truncated)'
 local TIMEOUT = 30000
 local VERSION_HEADERS = {
   ['editor-version'] = 'Neovim/'
@@ -45,32 +39,6 @@ local VERSION_HEADERS = {
   ['priority'] = 'u=4, i',
   -- ['x-github-api-version'] = '2023-07-07',
 }
-
-local curl_get = async.wrap(function(url, opts, callback)
-  opts = vim.tbl_deep_extend('force', opts, {
-    callback = callback,
-    on_error = function(err)
-      err = err and err.stderr or vim.inspect(err)
-      callback(nil, err)
-    end,
-  })
-  curl.get(url, opts)
-end, 3)
-
-local curl_post = async.wrap(function(url, opts, callback)
-  opts = vim.tbl_deep_extend('force', opts, {
-    callback = callback,
-    on_error = function(err)
-      err = err and err.stderr or vim.inspect(err)
-      callback(nil, err)
-    end,
-  })
-  curl.post(url, opts)
-end, 3)
-
-local tiktoken_load = async.wrap(function(tokenizer, callback)
-  tiktoken.load(tokenizer, callback)
-end, 2)
 
 --- Get the github oauth cached token
 ---@return string|nil
@@ -108,37 +76,41 @@ local function get_cached_token()
   return nil
 end
 
---- Generate line numbers for the given content
----@param content string: The content to generate line numbers for
+--- Generate content block with line numbers, truncating if necessary
+---@param content string: The content
+---@param outline string?: The outline
+---@param threshold number: The threshold for truncation
 ---@param start_line number|nil: The starting line number
 ---@return string
-local function generate_line_numbers(content, start_line)
-  local lines = vim.split(content, '\n')
-  local truncated = false
-
-  -- If the file is too big, truncate it
-  if #lines > BIG_FILE_THRESHOLD then
-    lines = vim.list_slice(lines, 1, BIG_FILE_THRESHOLD)
-    truncated = true
+local function generate_content_block(content, outline, threshold, start_line)
+  local total_chars = #content
+  if total_chars > threshold and outline then
+    content = outline
+    total_chars = #content
+  end
+  if total_chars > threshold then
+    content = content:sub(1, threshold)
+    content = content .. '\n' .. TRUNCATED
   end
 
-  local total_lines = #lines
-  local max_length = #tostring(total_lines)
-  for i, line in ipairs(lines) do
-    local formatted_line_number = string.format('%' .. max_length .. 'd', i - 1 + (start_line or 1))
-    lines[i] = formatted_line_number .. ': ' .. line
+  if start_line ~= -1 then
+    local lines = vim.split(content, '\n')
+    local total_lines = #lines
+    local max_length = #tostring(total_lines)
+    for i, line in ipairs(lines) do
+      local formatted_line_number =
+        string.format('%' .. max_length .. 'd', i - 1 + (start_line or 1))
+      lines[i] = formatted_line_number .. ': ' .. line
+    end
+
+    return table.concat(lines, '\n')
   end
 
-  if truncated then
-    table.insert(lines, '... (truncated)')
-  end
-
-  content = table.concat(lines, '\n')
   return content
 end
 
 --- Generate messages for the given selection
---- @param selection CopilotChat.config.selection
+--- @param selection CopilotChat.select.selection
 local function generate_selection_messages(selection)
   local filename = selection.filename or 'unknown'
   local filetype = selection.filetype or 'text'
@@ -163,7 +135,7 @@ local function generate_selection_messages(selection)
     .. string.format(
       '```%s\n%s\n```',
       filetype,
-      generate_line_numbers(content, selection.start_line)
+      generate_content_block(content, nil, BIG_FILE_THRESHOLD, selection.start_line)
     )
 
   if selection.diagnostics then
@@ -198,39 +170,20 @@ local function generate_selection_messages(selection)
 end
 
 --- Generate messages for the given embeddings
---- @param embeddings table<CopilotChat.copilot.embed>
+--- @param embeddings table<CopilotChat.context.embed>
 local function generate_embeddings_messages(embeddings)
-  local files = {}
-  for _, embedding in ipairs(embeddings) do
-    local filename = embedding.filename or 'unknown'
-    if not files[filename] then
-      files[filename] = {}
-    end
-    table.insert(files[filename], embedding)
-  end
-
-  local out = {}
-
-  for filename, group in pairs(files) do
-    local filetype = group[1].filetype or 'text'
-    table.insert(out, {
-      context = string.format(CONTEXT_FORMAT, filename, filename),
+  return vim.tbl_map(function(embedding)
+    return {
+      context = string.format(CONTEXT_FORMAT, embedding.filename, embedding.filename),
       content = string.format(
         '# FILE:%s CONTEXT\n```%s\n%s\n```',
-        filename:upper(),
-        filetype,
-        generate_line_numbers(table.concat(
-          vim.tbl_map(function(e)
-            return vim.trim(e.content)
-          end, group),
-          '\n'
-        ))
+        embedding.filename:upper(),
+        embedding.filetype or 'text',
+        generate_content_block(embedding.content, embedding.outline, BIG_FILE_THRESHOLD)
       ),
       role = 'user',
-    })
-  end
-
-  return out
+    }
+  end, embeddings)
 end
 
 local function generate_ask_request(
@@ -243,8 +196,9 @@ local function generate_ask_request(
   max_output_tokens,
   stream
 )
+  local is_o1 = vim.startswith(model, 'o1')
   local messages = {}
-  local system_role = stream and 'system' or 'user'
+  local system_role = is_o1 and 'user' or 'system'
   local contexts = {}
 
   if system_prompt ~= '' then
@@ -282,14 +236,14 @@ local function generate_ask_request(
     messages = messages,
     model = model,
     stream = stream,
+    n = 1,
   }
 
   if max_output_tokens then
     out.max_tokens = max_output_tokens
   end
 
-  if stream then
-    out.n = 1
+  if not is_o1 then
     out.temperature = temperature
     out.top_p = 1
   end
@@ -297,32 +251,30 @@ local function generate_ask_request(
   return out
 end
 
-local function generate_embedding_request(inputs, model)
+local function generate_embedding_request(inputs, model, threshold)
   return {
     dimensions = 512,
-    input = vim.tbl_map(function(input)
-      local out = ''
-      if input.filetype == 'raw' then
-        out = input.content .. '\n'
+    input = vim.tbl_map(function(embedding)
+      local content =
+        generate_content_block(embedding.outline or embedding.content, nil, threshold, -1)
+      if embedding.filetype == 'raw' then
+        return content
       else
-        out = out
-          .. string.format(
-            'File: `%s`\n```%s\n%s\n```',
-            input.filename,
-            input.filetype,
-            input.content
-          )
+        return string.format(
+          'File: `%s`\n```%s\n%s\n```',
+          embedding.filename,
+          embedding.filetype,
+          content
+        )
       end
-
-      return out
     end, inputs),
     model = model,
   }
 end
 
----@class CopilotChat.Copilot : CopilotChat.utils.Class
+---@class CopilotChat.Copilot : Class
 ---@field history table
----@field embedding_cache table<CopilotChat.copilot.embed>
+---@field embedding_cache table<CopilotChat.context.embed>
 ---@field policies table<string, boolean>
 ---@field models table<string, table>?
 ---@field agents table<string, table>?
@@ -344,6 +296,7 @@ local Copilot = class(function(self, proxy, allow_insecure)
   self.token = nil
   self.sessionid = nil
   self.machineid = utils.machine_id()
+  self.github_token = get_cached_token()
 
   self.request_args = {
     timeout = TIMEOUT,
@@ -356,15 +309,17 @@ local Copilot = class(function(self, proxy, allow_insecure)
       -- Wait 1 second between retries
       '--retry-delay',
       '1',
-      -- Maximum time for the request
-      '--max-time',
-      math.floor(TIMEOUT * 2 / 1000),
-      -- Timeout for initial connection
+      -- Keep connections alive for better performance
+      '--keepalive-time',
+      '60',
+      -- Disable compression (since responses are already streamed efficiently)
+      '--no-compressed',
+      -- Connect timeout of 10 seconds
       '--connect-timeout',
       '10',
-      '--no-keepalive', -- Don't reuse connections
-      '--tcp-nodelay', -- Disable Nagle's algorithm for faster streaming
-      '--no-buffer', -- Disable output buffering for streaming
+      -- Streaming optimizations
+      '--tcp-nodelay',
+      '--no-buffer',
     },
   }
 end)
@@ -373,12 +328,9 @@ end)
 ---@return table<string, string>
 function Copilot:authenticate()
   if not self.github_token then
-    self.github_token = get_cached_token()
-    if not self.github_token then
-      error(
-        'No GitHub token found, please use `:Copilot auth` to set it up from copilot.lua or `:Copilot setup` for copilot.vim'
-      )
-    end
+    error(
+      'No GitHub token found, please use `:Copilot auth` to set it up from copilot.lua or `:Copilot setup` for copilot.vim'
+    )
   end
 
   if
@@ -390,7 +342,7 @@ function Copilot:authenticate()
       ['accept'] = 'application/json',
     }, VERSION_HEADERS)
 
-    local response, err = curl_get(
+    local response, err = utils.curl_get(
       'https://api.github.com/copilot_internal/v2/token',
       vim.tbl_extend('force', self.request_args, {
         headers = headers,
@@ -433,7 +385,9 @@ function Copilot:fetch_models()
     return self.models
   end
 
-  local response, err = curl_get(
+  notify.publish(notify.STATUS, 'Fetching models')
+
+  local response, err = utils.curl_get(
     'https://api.githubcopilot.com/models',
     vim.tbl_extend('force', self.request_args, {
       headers = self:authenticate(),
@@ -461,8 +415,7 @@ function Copilot:fetch_models()
     end
   end
 
-  log.info('Models fetched')
-  log.trace(vim.inspect(models))
+  log.trace(models)
   self.models = out
   return out
 end
@@ -474,7 +427,9 @@ function Copilot:fetch_agents()
     return self.agents
   end
 
-  local response, err = curl_get(
+  notify.publish(notify.STATUS, 'Fetching agents')
+
+  local response, err = utils.curl_get(
     'https://api.githubcopilot.com/agents',
     vim.tbl_extend('force', self.request_args, {
       headers = self:authenticate(),
@@ -497,8 +452,7 @@ function Copilot:fetch_agents()
 
   out['copilot'] = { name = 'Copilot', default = true, description = 'Default noop agent' }
 
-  log.info('Agents fetched')
-  log.trace(vim.inspect(agents))
+  log.trace(agents)
   self.agents = out
   return out
 end
@@ -510,7 +464,9 @@ function Copilot:enable_policy(model)
     return
   end
 
-  local response, err = curl_post(
+  notify.publish(notify.STATUS, 'Enabling ' .. model .. ' policy')
+
+  local response, err = utils.curl_post(
     'https://api.githubcopilot.com/models/' .. model .. '/policy',
     vim.tbl_extend('force', self.request_args, {
       headers = self:authenticate(),
@@ -521,11 +477,9 @@ function Copilot:enable_policy(model)
   self.policies[model] = true
 
   if err or response.status ~= 200 then
-    log.warn('Failed to enable policy for ' .. model .. ': ' .. vim.inspect(err or response.body))
+    log.warn('Failed to enable policy for ', model, ': ', (err or response.body))
     return
   end
-
-  log.info('Policy enabled for ' .. model)
 end
 
 --- Ask a question to Copilot
@@ -545,13 +499,13 @@ function Copilot:ask(prompt, opts)
   local job_id = utils.uuid()
   self.current_job = job_id
 
-  log.trace('System prompt: ' .. system_prompt)
-  log.trace('Selection: ' .. (selection.content or ''))
-  log.debug('Prompt: ' .. prompt)
-  log.debug('Embeddings: ' .. #embeddings)
-  log.debug('Model: ' .. model)
-  log.debug('Agent: ' .. agent)
-  log.debug('Temperature: ' .. temperature)
+  log.trace('System prompt: ', system_prompt)
+  log.trace('Selection: ', selection.content)
+  log.debug('Prompt: ', prompt)
+  log.debug('Embeddings: ', #embeddings)
+  log.debug('Model: ', model)
+  log.debug('Agent: ', agent)
+  log.debug('Temperature: ', temperature)
 
   local history = no_history and {} or self.history
   local models = self:fetch_models()
@@ -569,9 +523,9 @@ function Copilot:ask(prompt, opts)
   local max_tokens = capabilities.limits.max_prompt_tokens -- FIXME: Is max_prompt_tokens the right limit?
   local max_output_tokens = capabilities.limits.max_output_tokens
   local tokenizer = capabilities.tokenizer
-  log.debug('Max tokens: ' .. max_tokens)
-  log.debug('Tokenizer: ' .. tokenizer)
-  tiktoken_load(tokenizer)
+  log.debug('Max tokens: ', max_tokens)
+  log.debug('Tokenizer: ', tokenizer)
+  tiktoken.load(tokenizer)
 
   local generated_messages = {}
   local selection_messages = generate_selection_messages(selection)
@@ -630,14 +584,17 @@ function Copilot:ask(prompt, opts)
       full_response = err
     end
 
+    log.debug('Finishing stream', err)
     finished = true
     job:shutdown(0)
   end
 
-  local function parse_line(line)
+  local function parse_line(line, job)
     if not line then
       return
     end
+
+    notify.publish(notify.STATUS, '')
 
     local ok, content = pcall(vim.json.decode, line, {
       luanil = {
@@ -647,7 +604,13 @@ function Copilot:ask(prompt, opts)
     })
 
     if not ok then
-      return content
+      if job then
+        finish_stream(
+          'Failed to parse response: ' .. utils.make_string(content) .. '\n' .. line,
+          job
+        )
+      end
+      return
     end
 
     if content.copilot_references then
@@ -674,15 +637,35 @@ function Copilot:ask(prompt, opts)
     local choice = content.choices[1]
     content = choice.message and choice.message.content or choice.delta and choice.delta.content
 
-    if not content then
-      return
+    if content then
+      full_response = full_response .. content
     end
 
-    if on_progress then
+    if content and on_progress then
       on_progress(content)
     end
 
-    full_response = full_response .. content
+    if choice.finish_reason and job then
+      finish_stream(nil, job)
+    end
+  end
+
+  local function parse_stream_line(line, job)
+    line = vim.trim(line)
+    if not vim.startswith(line, 'data:') then
+      return
+    end
+    line = line:gsub('^data:', '')
+    line = vim.trim(line)
+
+    if line == '[DONE]' then
+      if job then
+        finish_stream(nil, job)
+      end
+      return
+    end
+
+    parse_line(line, job)
   end
 
   local function stream_func(err, line, job)
@@ -695,26 +678,12 @@ function Copilot:ask(prompt, opts)
       return
     end
 
-    if err or vim.startswith(line, '{"error"') then
-      finish_stream('Failed to get response: ' .. (err and vim.inspect(err) or line), job)
-      return
-    end
-
-    if not vim.startswith(line, 'data: ') then
-      return
-    end
-
-    line = line:gsub('^%s*data:%s*', ''):gsub('%s*$', '')
-
-    if line == '[DONE]' then
-      finish_stream(nil, job)
-      return
-    end
-
-    err = parse_line(line)
     if err then
-      finish_stream('Failed to parse response: ' .. vim.inspect(err) .. '\n' .. line, job)
+      finish_stream('Failed to get response: ' .. utils.make_string(err and err or line), job)
+      return
     end
+
+    parse_stream_line(line, job)
   end
 
   local is_stream = not vim.startswith(model, 'o1')
@@ -746,7 +715,9 @@ function Copilot:ask(prompt, opts)
     args.stream = stream_func
   end
 
-  local response, err = curl_post(url, args)
+  notify.publish(notify.STATUS, 'Thinking')
+
+  local response, err = utils.curl_post(url, args)
 
   if self.current_job ~= job_id then
     return nil, nil, nil
@@ -763,6 +734,10 @@ function Copilot:ask(prompt, opts)
     error('Failed to get response')
     return
   end
+
+  log.debug('Response status: ', response.status)
+  log.debug('Response body: ', response.body)
+  log.debug('Response headers: ', response.headers)
 
   if response.status ~= 200 then
     if response.status == 401 then
@@ -793,7 +768,13 @@ function Copilot:ask(prompt, opts)
     return
   end
 
-  if not is_stream then
+  if is_stream then
+    if full_response == '' then
+      for _, line in ipairs(vim.split(response.body, '\n')) do
+        parse_stream_line(line)
+      end
+    end
+  else
     parse_line(response.body)
   end
 
@@ -810,8 +791,8 @@ function Copilot:ask(prompt, opts)
     end
   end
 
-  log.trace('Full response: ' .. full_response)
-  log.debug('Last message: ' .. vim.inspect(last_message))
+  log.trace('Full response: ', full_response)
+  log.debug('Last message: ', last_message)
 
   table.insert(history, {
     content = prompt,
@@ -872,92 +853,105 @@ function Copilot:list_agents()
 end
 
 --- Generate embeddings for the given inputs
----@param inputs table<CopilotChat.copilot.embed>: The inputs to embed
----@param opts CopilotChat.copilot.embed.opts: Options for the request
----@return table<CopilotChat.copilot.embed>
-function Copilot:embed(inputs, opts)
+---@param inputs table<CopilotChat.context.embed>: The inputs to embed
+---@return table<CopilotChat.context.embed>
+function Copilot:embed(inputs)
   if not inputs or #inputs == 0 then
     return {}
   end
 
-  -- Check which embeddings need to be fetched
-  local cached_embeddings = {}
-  local uncached_embeddings = {}
-  for _, embed in ipairs(inputs) do
-    embed.filename = embed.filename or 'unknown'
-    embed.filetype = embed.filetype or 'text'
+  notify.publish(notify.STATUS, 'Generating embeddings for ' .. #inputs .. ' inputs')
 
-    if embed.content then
-      local key = embed.filename .. utils.quick_hash(embed.content)
-      if self.embedding_cache[key] then
-        table.insert(cached_embeddings, self.embedding_cache[key])
+  -- Initialize essentials
+  local model = EMBED_MODEL
+  local to_process = {}
+  local results = {}
+  local initial_chunk_size = 10
+
+  -- Process each input, using cache when possible
+  for _, input in ipairs(inputs) do
+    input.filename = input.filename or 'unknown'
+    input.filetype = input.filetype or 'text'
+
+    if input.content then
+      local cache_key = input.filename .. utils.quick_hash(input.content)
+      if self.embedding_cache[cache_key] then
+        table.insert(results, self.embedding_cache[cache_key])
       else
-        table.insert(uncached_embeddings, embed)
+        table.insert(to_process, input)
       end
-    else
-      table.insert(uncached_embeddings, embed)
     end
   end
 
-  opts = opts or {}
-  local model = opts.model or 'text-embedding-3-small'
-  local chunk_size = opts.chunk_size or 15
+  -- Process inputs in batches with adaptive chunk size
+  while #to_process > 0 do
+    local chunk_size = initial_chunk_size -- Reset chunk size for each new batch
+    local threshold = BIG_EMBED_THRESHOLD -- Reset threshold for each new batch
 
-  local out = {}
-
-  for i = 1, #uncached_embeddings, chunk_size do
-    local chunk = vim.list_slice(uncached_embeddings, i, i + chunk_size - 1)
-    local body = vim.json.encode(generate_embedding_request(chunk, model))
-    local response, err = curl_post(
-      'https://api.githubcopilot.com/embeddings',
-      vim.tbl_extend('force', self.request_args, {
-        headers = self:authenticate(),
-        body = temp_file(body),
-      })
-    )
-
-    if err then
-      error(err)
-      return {}
+    -- Take next chunk
+    local batch = {}
+    for _ = 1, math.min(chunk_size, #to_process) do
+      table.insert(batch, table.remove(to_process, 1))
     end
 
-    if not response then
-      error('Failed to get response')
-      return {}
+    -- Try to get embeddings for batch
+    local success = false
+    local attempts = 0
+    while not success and attempts < 5 do -- Limit total attempts to 5
+      local body = vim.json.encode(generate_embedding_request(batch, model, threshold))
+      local response, err = utils.curl_post(
+        'https://api.githubcopilot.com/embeddings',
+        vim.tbl_extend('force', self.request_args, {
+          headers = self:authenticate(),
+          body = temp_file(body),
+        })
+      )
+
+      if err or not response or response.status ~= 200 then
+        attempts = attempts + 1
+        -- If we have few items and the request failed, try reducing threshold first
+        if #batch <= 5 then
+          threshold = math.max(5 * LINE_CHARACTERS, math.floor(threshold / 2))
+          log.debug(string.format('Reducing threshold to %d and retrying...', threshold))
+        else
+          -- Otherwise reduce batch size first
+          chunk_size = math.max(1, math.floor(chunk_size / 2))
+          -- Put items back in to_process
+          for i = #batch, 1, -1 do
+            table.insert(to_process, 1, table.remove(batch, i))
+          end
+          -- Take new smaller batch
+          batch = {}
+          for _ = 1, math.min(chunk_size, #to_process) do
+            table.insert(batch, table.remove(to_process, 1))
+          end
+          log.debug(string.format('Reducing batch size to %d and retrying...', chunk_size))
+        end
+      else
+        success = true
+
+        -- Process and cache results
+        local ok, content = pcall(vim.json.decode, response.body)
+        if not ok then
+          error('Failed to parse embedding response: ' .. response.body)
+        end
+
+        for _, embedding in ipairs(content.data) do
+          local result = vim.tbl_extend('keep', batch[embedding.index + 1], embedding)
+          table.insert(results, result)
+
+          local cache_key = result.filename .. utils.quick_hash(result.content)
+          self.embedding_cache[cache_key] = result
+        end
+      end
     end
 
-    if response.status ~= 200 then
-      error('Failed to get response: ' .. tostring(response.status) .. '\n' .. response.body)
-      return {}
-    end
-
-    local ok, content = pcall(vim.json.decode, response.body, {
-      luanil = {
-        object = true,
-        array = true,
-      },
-    })
-
-    if not ok then
-      error('Failed to parse response: ' .. vim.inspect(content) .. '\n' .. response.body)
-      return {}
-    end
-
-    for _, embedding in ipairs(content.data) do
-      table.insert(out, vim.tbl_extend('keep', chunk[embedding.index + 1], embedding))
+    if not success then
+      error('Failed to process embeddings after multiple attempts')
     end
   end
 
-  -- Cache embeddings
-  for _, embedding in ipairs(out) do
-    if embedding.content then
-      local key = embedding.filename .. utils.quick_hash(embedding.content)
-      self.embedding_cache[key] = embedding
-    end
-  end
-
-  -- Merge cached embeddings and newly fetched embeddings and return
-  return vim.list_extend(out, cached_embeddings)
+  return results
 end
 
 --- Stop the running job
